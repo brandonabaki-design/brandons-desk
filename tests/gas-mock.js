@@ -30,13 +30,24 @@ const TAB_ORDER = ['Work', 'Personal', 'Inbox', 'Agenda', 'Config', 'Log'];
 // ---------------------------------------------------------------------------
 
 const dtfCache = new Map();
+/** Zone ids Intl rejected: the mock, like Java's TimeZone.getTimeZone, then formats them in GMT instead of throwing. */
+const unknownZones = new Set();
 function dateParts(date, tz) {
   let dtf = dtfCache.get(tz);
   if (!dtf) {
-    dtf = new Intl.DateTimeFormat('en-US', {
+    const opts = {
       timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'long', timeZoneName: 'longOffset'
-    });
+    };
+    try {
+      dtf = new Intl.DateTimeFormat('en-US', opts);
+    } catch (e) {
+      // Apps Script's Utilities.formatDate (Java SimpleDateFormat) silently maps an unknown id such as
+      // "Asia/Dubay" to GMT; mirror that so the code's own detection, not an exception, is what tests see.
+      if (!(e instanceof RangeError)) throw e;
+      unknownZones.add(tz);
+      dtf = new Intl.DateTimeFormat('en-US', Object.assign({}, opts, { timeZone: 'UTC' }));
+    }
     dtfCache.set(tz, dtf);
   }
   const out = {};
@@ -134,6 +145,23 @@ function normaliseCell(v) {
 
 function isEmptyCell(v) {
   return v === '' || v === null || v === undefined;
+}
+
+/**
+ * What Sheets makes of a typed/API-written string in a cell without a plain-text format:
+ * number-, boolean- and date-looking text is parsed (opt-in through state.coerceStrings).
+ */
+function coerceInput(s) {
+  const t = s.trim();
+  if (/^[+-]?\d+(\.\d+)?$/.test(t)) return Number(t);
+  if (/^(true|false)$/i.test(t)) return t.toLowerCase() === 'true';
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t);
+  if (m) return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]) - 4 * 3600000); // midnight Asia/Dubai
+  m = /^(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{4}))?$/.exec(t); // "10/12", "1-2", "10/12/2026" (month/day, as an en-US locale reads them)
+  if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) {
+    return new Date(Date.UTC(m[3] ? +m[3] : new Date().getUTCFullYear(), +m[1] - 1, +m[2]) - 4 * 3600000);
+  }
+  return s;
 }
 
 function colToLetters(col) {
@@ -327,6 +355,7 @@ class MockSheet {
     this.id = id;
     this.data = [];
     this.fdata = []; // formulas, parallel to data ('' where a cell holds a plain value)
+    this.rdata = []; // rich-text link URLs, parallel to data ('' where a cell holds no hyperlink)
     this.maxRows = 1000;
     this.maxCols = 26;
     this.frozenRows = 0;
@@ -372,15 +401,45 @@ class MockSheet {
     if (r && r.length >= col) r[col - 1] = '';
   }
   /**
+   * A rich-text hyperlink (Sheets: Insert → Link with a label). getValues() shows the label;
+   * any write through setValue(s)/appendRow replaces the cell with plain text and the URL is gone,
+   * exactly as in Sheets. state.setRichText seeds one, state.richText reads the URL back.
+   */
+  setRichText_(row, col, label, url) {
+    this.clearFormula_(row, col);
+    this.setCell_(row, col, String(label));
+    while (this.rdata.length < row) this.rdata.push([]);
+    const r = this.rdata[row - 1];
+    while (r.length < col) r.push('');
+    r[col - 1] = String(url || '');
+  }
+  getRichUrl_(row, col) {
+    const r = this.rdata[row - 1];
+    return r && r[col - 1] ? r[col - 1] : '';
+  }
+  clearRich_(row, col) {
+    const r = this.rdata[row - 1];
+    if (r && r.length >= col) r[col - 1] = '';
+  }
+  /**
    * What Range.setValue(s) and Sheet.appendRow do with one value: a string beginning with "="
    * is interpreted as a formula (Apps Script reference), anything else is stored as a value.
+   * Any write drops a rich-text link the cell held. With state.coerceStrings on, a string in a
+   * cell whose number format is not '@' is parsed the way Sheets parses typed input (see
+   * coerceInput); the '@' format ensureSchema puts on the text columns keeps it as text.
    */
   writeCell_(row, col, v) {
+    this.clearRich_(row, col);
+    this.spreadsheet.state.cellWrites.push({ sheet: this.name, row: row, col: col });
     if (typeof v === 'string' && v.charAt(0) === '=') {
       this.setFormula_(row, col, v);
     } else {
       this.clearFormula_(row, col);
-      this.setCell_(row, col, normaliseCell(v));
+      let value = normaliseCell(v);
+      if (typeof value === 'string' && this.spreadsheet.state.coerceStrings && this.metaGet_('formats', row, col) !== '@') {
+        value = coerceInput(value);
+      }
+      this.setCell_(row, col, value);
     }
   }
   meta_(kind, range, value) {
@@ -443,21 +502,30 @@ class MockSheet {
   deleteRow(row) { return this.deleteRows(row, 1); }
   deleteRows(start, n) {
     if (start < 1 || n < 1) throw new Error('Invalid deleteRows arguments');
+    if (start + n - 1 > this.maxRows) throw new Error('Those rows are out of bounds. (deleteRows ' + start + ', ' + n + ' of ' + this.maxRows + ')');
+    if (this.maxRows - n <= this.frozenRows) throw new Error('Sorry, it is not possible to delete all non-frozen rows.');
     this.data.splice(start - 1, n);
     this.fdata.splice(start - 1, n);
+    this.rdata.splice(start - 1, n);
     this.maxRows = Math.max(1, this.maxRows - n);
     return this;
   }
   insertRowsAfter(after, n) { this.maxRows += n; return this; }
   insertRowsBefore(before, n) { this.maxRows += n; return this; }
   insertRowAfter(after) { return this.insertRowsAfter(after, 1); }
-  clearContents() { this.data = []; this.fdata = []; return this; }
-  clear() { this.data = []; this.fdata = []; return this; }
+  clearContents() { this.data = []; this.fdata = []; this.rdata = []; return this; }
+  clear() { this.data = []; this.fdata = []; this.rdata = []; return this; }
   /** [{row, col, formula}] for every formula cell (test inspection). */
   formulaCells_() {
     const out = [];
     this.fdata.forEach((r, i) => r.forEach((f, j) => { if (f) out.push({ row: i + 1, col: j + 1, formula: f }); }));
     return out;
+  }
+  /** Rich-text value of one cell (label + first link URL), as RichTextValue.getText()/getLinkUrl() give it. */
+  getRichTextValue() {
+    const self = this;
+    const url = this.sheet.getRichUrl_(this.row, this.col);
+    return { getText: () => String(self.getValue()), getLinkUrl: () => url || null };
   }
   setFrozenRows(n) { this.frozenRows = n; return this; }
   getFrozenRows() { return this.frozenRows; }
@@ -561,6 +629,10 @@ function createMock(options) {
   const opts = options || {};
   const state = {
     writes: 0,
+    // Every cell a setValue(s)/appendRow/clearContent touched: [{sheet, row, col}] (tests assert what was NOT written).
+    cellWrites: [],
+    // true: strings written to a cell without the '@' number format are parsed like typed input (see coerceInput).
+    coerceStrings: false,
     spreadsheets: new Map(),
     nextSpreadsheetId: 1,
     properties: Object.assign({}, opts.properties || {}),
@@ -626,6 +698,9 @@ function createMock(options) {
   };
   // Every formula cell of a tab: [] proves nothing the code wrote was interpreted as a formula.
   state.formulas = (tab, id) => state.sheet(tab, id).formulaCells_();
+  // A rich-text hyperlink cell (label shown by getValues(), URL kept until something rewrites the cell).
+  state.setRichText = (tab, row, col, label, url, id) => { state.sheet(tab, id).setRichText_(row, col, label, url); };
+  state.richText = (tab, row, col, id) => state.sheet(tab, id).getRichUrl_(row, col);
   state.logRows = (id) => state.rows('Log', id).map((r) => ({ time: r[0], fn: r[1], level: r[2], message: r[3] }));
   // Threads built through the mock count their per-thread getMessages() calls.
   const makeCountedThread = (spec) => {
@@ -868,4 +943,4 @@ function createMock(options) {
   return { globals: globals, state: state };
 }
 
-module.exports = { createMock, formatDateJava, HEADERS, TAB_ORDER, DEFAULT_SHEET_ID, makeThread };
+module.exports = { createMock, formatDateJava, HEADERS, TAB_ORDER, DEFAULT_SHEET_ID, makeThread, unknownZones };

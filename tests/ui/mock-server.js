@@ -140,6 +140,12 @@
   var log = [{ time: NOW, fn: 'captureInbox', level: 'INFO', message: 'gmail 4, chat 2, chatMode api' }, { time: d(-1) + 'T06:16:00+04:00', fn: 'healSheet', level: 'INFO', message: 'Work: filled 1 ID' }];
 
   function findTask(cat, id) { for (var i = 0; i < tasks.length; i++) if (tasks[i].id === id && (!cat || tasks[i].category === cat)) return tasks[i]; throw new Error('Task not found: ' + id); }
+  function appendNote(existing, note) {
+    var n = String(note || '').replace(/\s+/g, ' ').trim(), e = String(existing || '').trim();
+    if (!n) return e;
+    if (e === n || e.slice(-(n.length + 3)) === ' · ' + n) return e;
+    return e ? e + ' · ' + n : n;
+  }
   function touch(t) { t.updated = NOW; return clone(t); }
   function sortTasks(list) {
     function rank(t) { if (t.status !== 'Open') return 4; if (t.due && t.due < TODAY) return 0; if (t.due === TODAY) return 1; if (t.priority === 'High') return 2; return 3; }
@@ -184,13 +190,15 @@
       if (patch.status === 'Open') t.done = '';
       return { task: touch(t) };
     },
-    completeTask: function (p) { var t = findTask(p.category, p.id); t.status = 'Done'; t.done = TODAY; if (p.note) t.note = t.note ? t.note + ' ' + p.note : p.note; return { task: touch(t) }; },
+    // Same semantics as Tasks.gs: a note is APPENDED with " · " (never replaced), a task already Done keeps its Done date.
+    completeTask: function (p) { var t = findTask(p.category, p.id); if (t.status !== 'Done' || !t.done) t.done = TODAY; t.status = 'Done'; t.note = appendNote(t.note, p.note); return { task: touch(t) }; },
     reopenTask: function (p) { var t = findTask(p.category, p.id); t.status = 'Open'; t.done = ''; return { task: touch(t) }; },
-    dropTask: function (p) { var t = findTask(p.category, p.id); t.status = 'Dropped'; if (p.note) t.note = p.note; return { task: touch(t) }; },
+    dropTask: function (p) { var t = findTask(p.category, p.id); t.status = 'Dropped'; t.note = appendNote(t.note, p.note); return { task: touch(t) }; },
+    // The copy keeps the Source key; the Dropped original gives it up (Tasks.gs moveTaskLocked_).
     moveTask: function (p) {
       var t = findTask(p.category, p.id);
-      var copy = clone(t); copy.id = newId(p.toCategory === 'Work' ? 'W' : 'P'); copy.category = p.toCategory; copy.sourceKey = ''; copy.row = tasks.length + 2; copy.updated = NOW;
-      tasks.push(copy); t.status = 'Dropped'; t.note = 'Moved to ' + copy.id; touch(t);
+      var copy = clone(t); copy.id = newId(p.toCategory === 'Work' ? 'W' : 'P'); copy.category = p.toCategory; copy.row = tasks.length + 2; copy.updated = NOW;
+      tasks.push(copy); t.status = 'Dropped'; t.note = 'Moved to ' + copy.id; t.sourceKey = ''; touch(t);
       return { task: clone(copy) };
     },
     importText: function (p) {
@@ -198,14 +206,14 @@
       String(p.text || '').split(/\r?\n/).forEach(function (line) {
         var raw = line.trim(); if (!raw) return;
         if (raw.charAt(0) === '#') { project = raw.replace(/^#+\s*/, '').trim(); return; }
-        if (raw.length <= 2) { skipped.push({ line: raw, reason: 'too short' }); return; }
         var s = raw, cat = p.category || 'Work', done = false, due = '', prio = 'Normal', m;
         m = /^\[(work|personal|w|p)\]\s*/i.exec(s); if (m) { cat = /^(w|work)$/i.test(m[1]) ? 'Work' : 'Personal'; s = s.slice(m[0].length); }
         m = /^(-\s*\[[xX]\]|\[[xX]\]|✓|✔|☑)\s*/.exec(s); if (m) { done = true; s = s.slice(m[0].length); }
         m = /^([-*•☐]|\[ \]|\d+[.)])\s*/.exec(s); if (m) s = s.slice(m[0].length);
         m = /\s*(!{1,2})$/.exec(s); if (m) { prio = 'High'; s = s.slice(0, m.index); }
         m = /\s*(?:@|due:\s*)(\d{4}-\d{2}-\d{2})$/i.exec(s); if (m) { due = m[1]; s = s.slice(0, m.index); }
-        s = s.trim(); if (!s) return;
+        s = s.trim();
+        if (s.length <= 2) { skipped.push({ line: raw, reason: 'too short' }); return; } // measured after stripping, as Import.gs does
         var r = addTaskImpl({ category: cat, title: s, project: project, due: due, priority: prio, source: 'Import', created: created, sourceKey: 'import:' + norm(s) + '|' + created, status: done ? 'Done' : 'Open', done: done ? created : '' });
         if (r.duplicate) skipped.push({ line: raw, reason: 'duplicate' }); else added.push(r.task);
       });
@@ -238,7 +246,7 @@
       var list = tasks.filter(function (t) { return t.category === 'Work' && t.newsletter && ((t.status === 'Done' && t.done >= from && t.done <= to) || t.status === 'Open'); });
       var groups = {}, order = [];
       list.forEach(function (t) { var k = t.project || 'Other'; if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(t); });
-      var md = ['# AI Learning Hub newsletter — material ' + from + ' to ' + to, ''];
+      var md = ['# AI Learning Hub — newsletter notes', '', '_Window: ' + from + ' to ' + to + '_', '']; // Newsletter.gs heading
       order.forEach(function (k) { md.push('## ' + k); groups[k].forEach(function (t) { md.push('- ' + (t.status === 'Done' ? '[x] ' : '[ ] ') + t.title + (t.note ? ' — ' + t.note : '') + (t.link ? ' (' + t.link + ')' : '')); }); md.push(''); });
       return { tasks: clone(list), markdown: md.join('\n') };
     },

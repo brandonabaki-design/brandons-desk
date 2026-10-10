@@ -272,7 +272,16 @@ function normaliseSections_(sections) {
   return rows;
 }
 
-/** saveAgenda: {meetingDate, sections} → {ok:true, rows:n}. Replaces that week's rows. */
+/**
+ * saveAgenda: {meetingDate, sections} → {ok:true, rows:n}. Replaces that week's rows.
+ *
+ * Only the rows whose Week of is this weekOf are touched: they are deleted (bottom-up, as
+ * contiguous runs) and the new rows are appended through appendRows(). Other weeks' rows,
+ * whether saved here, written by the Claude agenda routine or edited by hand, are never read
+ * back and rewritten, so a cell that holds the literal text "=…" can never be turned into a
+ * live formula, a =HYPERLINK() or rich-text link in another week keeps its formula, and a
+ * failing write cannot wipe the tab (there is no clear-everything step).
+ */
 function saveAgenda_(input) {
   const inp = input || {};
   const win = agendaWindow(validDateOrBlank_(inp.meetingDate, 'Meeting date') || resolveMeetingDate_(inp, readConfig()));
@@ -295,16 +304,32 @@ function saveAgenda_(input) {
   });
   withLock(() => {
     const sheet = getTab(TABS.AGENDA);
-    const last = sheet.getLastRow();
-    const existing = last >= 2 ? sheet.getRange(2, 1, last - 1, cols).getValues() : [];
-    const kept = existing.filter((cells) => !isBlankRow_(cells) && toDateString(cells[C.weekOf]) !== win.weekOf);
-    const all = kept.concat(newRows);
-    if (last >= 2) sheet.getRange(2, 1, last - 1, cols).clearContent();
-    if (all.length) {
-      if (sheet.getMaxRows() < all.length + 1) sheet.insertRowsAfter(sheet.getMaxRows(), all.length + 1 - sheet.getMaxRows());
-      sheet.getRange(2, 1, all.length, cols).setValues(all);
-    }
+    deleteAgendaWeek_(sheet, win.weekOf);
+    appendRows(TABS.AGENDA, newRows);
   });
   log('saveAgenda', 'INFO', 'week of ' + win.weekOf + ': ' + rows.length + ' row(s) saved');
   return { ok: true, rows: rows.length };
+}
+
+/** Deletes the Agenda rows whose Week of equals weekOf (as Date or yyyy-MM-dd text), bottom-up in contiguous runs. */
+function deleteAgendaWeek_(sheet, weekOf) {
+  const C = COLUMN.AGENDA;
+  const last = sheet.getLastRow();
+  if (last < 2) return 0;
+  const weekCells = sheet.getRange(2, C.weekOf + 1, last - 1, 1).getValues();
+  const doomed = [];
+  weekCells.forEach((cells, i) => {
+    if (toDateString(cells[0]) === weekOf) doomed.push(i + 2);
+  });
+  if (!doomed.length) return 0;
+  // Sheets refuses to delete every non-frozen row: keep at least one spare row below the header.
+  if (sheet.getMaxRows() - doomed.length < 2) sheet.insertRowsAfter(sheet.getMaxRows(), 2);
+  let i = doomed.length - 1;
+  while (i >= 0) {
+    let j = i;
+    while (j - 1 >= 0 && doomed[j - 1] === doomed[j] - 1) j--;
+    sheet.deleteRows(doomed[j], i - j + 1);
+    i = j - 1;
+  }
+  return doomed.length;
 }

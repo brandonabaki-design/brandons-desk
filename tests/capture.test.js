@@ -458,6 +458,19 @@ module.exports = async function (t) {
     assert.equal(dupe.duplicate, true);
     assert.equal(sb.mock.rows('Inbox')[4][CI.status], 'Promoted');
     assert.equal(sb.mock.rows('Inbox')[4][CI.taskId], task.id);
+    // A row that is already Promoted (the UI hides the button; the call is still reachable) returns the task it was
+    // promoted to, whichever category is asked for: a Source key is unique across Work and Personal (SPEC 3).
+    const again = sb.gs.promoteInbox_({ inboxId: 'I-new', category: 'Personal' });
+    assert.equal(again.task.id, task.id, 'already Promoted → the existing task');
+    assert.equal(again.duplicate, true);
+    assert.equal(sb.mock.rows('Personal').filter((r) => r[14] === 'chat:spaces/X/messages/1').length, 0, 'no second row with that key in the other tab');
+    assert.equal(sb.gs.readTasks('Work').concat(sb.gs.readTasks('Personal')).filter((t) => t.sourceKey === 'chat:spaces/X/messages/1').length, 1);
+    // Even a New row whose key already lives in the other tab dedupes there
+    sb.mock.seed('Inbox', [['I-cross', new Date(), 'Chat', 'Sara', 'Direct message', 'third time', '', 'chat:spaces/X/messages/1', 'New', '', 'Personal']]);
+    const cross = sb.gs.promoteInbox_({ inboxId: 'I-cross', category: 'Personal' });
+    assert.equal(cross.task.id, task.id);
+    assert.equal(cross.task.category, 'Work');
+    assert.equal(sb.mock.rows('Inbox')[5][CI.taskId], task.id);
 
     assert.deepEqual(sb.gs.ignoreInbox_({ inboxId: 'I-old' }), { ok: true });
     assert.equal(sb.mock.rows('Inbox')[0][CI.status], 'Ignored');

@@ -81,24 +81,32 @@ module.exports = async function (t) {
     sb.mock.urlFetch.handler = () => ({ code: 403, body: { error: { code: 403, status: 'PERMISSION_DENIED', details: [{ reason: 'SERVICE_DISABLED' }] } } });
     const r = sb.gs.selfTest();
     assert.equal(r.ok, true, JSON.stringify(r.errors));
-    assert.deepEqual(r.steps.map((s) => s.step), ['openSpreadsheet', 'ensureSchema', 'readConfig', 'healSheet', 'addTask', 'completeTask', 'importText', 'gmail', 'chat', 'cleanup']);
+    assert.deepEqual(r.steps.map((s) => s.step), ['openSpreadsheet', 'ensureSchema', 'readConfig', 'healSheet', 'addTask', 'completeTask', 'importText', 'textRoundTrip', 'gmail', 'chat', 'cleanup']);
     assert.ok(r.steps.every((s) => s.ok));
     assert.match(r.steps[4].result, /^W-[a-z0-9]{8}$/);
     assert.match(r.steps[5].result, /^Done \d{4}-\d{2}-\d{2}$/);
     assert.equal(r.steps[6].result, 'added 1, skipped 0');
+    assert.equal(r.steps[7].result, 'title, note and project read back as typed');
     assert.equal(r.chat.ok, false);
     assert.equal(r.chat.code, 403);
     assert.match(r.chat.detail, /SERVICE_DISABLED/);
     assert.equal(r.gmail.ok, true);
-    assert.equal(r.steps[9].result, '2 throwaway row(s) removed');
+    assert.equal(r.steps[10].result, '3 throwaway row(s) removed');
     assert.equal(sb.mock.rows('Work').length, 1, 'only the pre-existing task remains');
     assert.equal(sb.mock.rows('Work')[0][2], 'Pre-existing task');
     assert.equal(sb.mock.rows('Personal').length, 0);
     assert.ok(sb.mock.logRows().some((row) => /^CHAT_API_BLOCKED HTTP 403/.test(row.message)));
     const summary = sb.mock.logRows().find((row) => row.fn === 'selfTest');
     assert.equal(summary.level, 'INFO');
-    assert.match(summary.message, /addTask:ok completeTask:ok importText:ok gmail:ok chat:ok cleanup:ok/);
+    assert.match(summary.message, /addTask:ok completeTask:ok importText:ok textRoundTrip:ok gmail:ok chat:ok cleanup:ok/);
     assert.equal(findUnsafe(r), '');
+    // With Sheets' input parsing modelled, the step passes only because ensureSchema put '@' on the text columns
+    // (tasks.test.js shows the same strings coming back as 7 / true / a Date without it).
+    sb.mock.coerceStrings = true;
+    const typed = sb.gs.selfTest();
+    assert.equal(typed.ok, true, JSON.stringify(typed.errors));
+    assert.equal(typed.steps[7].result, 'title, note and project read back as typed');
+    sb.mock.coerceStrings = false;
     // A failing step is reported, not thrown
     sb.mock.gmail.throwOnSearch = 'You do not have permission to call GmailApp.search';
     const bad = sb.gs.selfTest();

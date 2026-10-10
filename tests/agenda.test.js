@@ -255,4 +255,81 @@ module.exports = async function (t) {
     assert.throws(() => sb.gs.saveAgenda_({ meetingDate: '2026-10-13' }), /Sections required/);
     assert.throws(() => sb.gs.saveAgenda_({ meetingDate: 'x', sections: {} }), /Meeting date/);
   }, { now: NOW });
+
+  await t.test('rows written by the Claude routines (string dates) are read as saved, kept by regenerate and replaced by save', (sb, assert) => {
+    sb.mock.seed('Agenda', [
+      ['2026-10-12', 'Questions', 1, 'Routine question?', '', '', '', '2026-10-05 18:12'],
+      ['2026-10-12', 'Notes', 1, 'Routine note', '', '', '', '2026-10-05 18:12'],
+      ['2026-10-05', 'Notes', 1, 'Last week', '', '', '', '2026-09-28 18:12']
+    ]);
+    const got = sb.gs.getAgenda_({ meetingDate: '2026-10-13' });
+    assert.equal(got.saved, true, 'string Week of matches weekOf');
+    assert.deepEqual(got.sections.Questions.map((r) => r.item), ['Routine question?']);
+    assert.deepEqual(got.sections.Notes.map((r) => r.item), ['Routine note']);
+    assert.deepEqual(sb.gs.regenerateAgenda_({ meetingDate: '2026-10-13' }).sections.Questions.map((r) => r.item), ['Routine question?']);
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Notes: [{ item: 'Replaced' }] } });
+    assert.deepEqual(sb.mock.rows('Agenda').map((r) => r[3]).sort(), ['Last week', 'Replaced'], 'string-dated rows of this week replaced, other week kept');
+    assert.equal(sb.mock.rows('Agenda')[0][0], '2026-10-05', "the other week's cells are left exactly as the routine wrote them");
+    sb.mock.seed('Log', [['2026-10-08 06:45:12', 'claude-morning', 'INFO', 'added W:1 P:0']]);
+    assert.equal(sb.gs.getLog({}).rows.find((r) => r.fn === 'claude-morning').time, '2026-10-08T06:45:12+04:00', 'routine Log time with seconds');
+    assert.equal(sb.gs.parseDate('2026-10-08 06:45:12').toISOString(), '2026-10-08T02:45:12.000Z');
+    sb.mock.seed('Inbox', [['I-r1', '2026-10-08 06:15', 'Gmail', 'A', 'S', 's', '', 'gmail:r1', 'New', '', 'Work']]);
+    assert.equal(sb.gs.listInbox_({}).items[0].captured, '2026-10-08T06:15:00+04:00');
+  }, { now: NOW });
+
+  await t.test("saveAgenda never rewrites other weeks' rows: a literal \"=\" Item stays text and a formula keeps its formula", (sb, assert) => {
+    const CA = sb.eval('COLUMN.AGENDA');
+    // A cell holding the literal text "=HYPERLINK(...)" (a RAW Sheets-API write by the agenda routine): mock.setCell is the
+    // plain-value path, so this is text, not a formula, exactly like an apostrophe-prefixed cell in the live sheet.
+    sb.mock.setCell('Agenda', 2, CA.weekOf + 1, '2026-09-28');
+    sb.mock.setCell('Agenda', 2, CA.section + 1, 'Notes');
+    sb.mock.setCell('Agenda', 2, CA.order + 1, 1);
+    sb.mock.setCell('Agenda', 2, CA.item + 1, '=HYPERLINK("https://evil","click")');
+    sb.mock.setFormula('Agenda', 2, CA.link + 1, '=HYPERLINK("https://docs.google.com/d/1","Doc")', 'Doc');
+    sb.mock.setRichText('Agenda', 2, CA.detail + 1, 'the doc', 'https://docs.google.com/d/2');
+    sb.mock.cellWrites.length = 0;
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Notes: [{ item: 'new week note' }] } });
+    assert.deepEqual(sb.mock.formulas('Agenda'), [{ row: 2, col: CA.link + 1, formula: '=HYPERLINK("https://docs.google.com/d/1","Doc")' }], 'the Item text did not become a formula; the Link formula is still there');
+    assert.equal(sb.mock.rows('Agenda')[0][CA.item], '=HYPERLINK("https://evil","click")', 'kept row untouched');
+    assert.equal(sb.mock.richText('Agenda', 2, CA.detail + 1), 'https://docs.google.com/d/2', 'rich text kept');
+    assert.ok(!sb.mock.cellWrites.some((w) => w.sheet === 'Agenda' && w.row === 2), "no cell of the other week's row was written");
+    assert.equal(sb.gs.getAgenda_({ meetingDate: '2026-09-29' }).sections.Notes[0].item, '=HYPERLINK("https://evil","click")', 'reads back as text');
+    assert.deepEqual(sb.mock.rows('Agenda').map((r) => r[CA.item]), ['=HYPERLINK("https://evil","click")', 'new week note']);
+    // Re-saving this week deletes only its rows (a contiguous run under the kept week) and appends the new ones
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Notes: [{ item: 'n1' }, { item: 'n2' }] } });
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-20', sections: { Notes: [{ item: 'next' }] } });
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Questions: [{ item: 'q' }] } });
+    assert.deepEqual(sb.mock.rows('Agenda').map((r) => [sb.gs.toDateString(r[CA.weekOf]), r[CA.item]]),
+      [['2026-09-28', '=HYPERLINK("https://evil","click")'], ['2026-10-19', 'next'], ['2026-10-12', 'q']]);
+    assert.equal(sb.mock.sheet('Agenda').getRange(2, CA.link + 1).getFormula(), '=HYPERLINK("https://docs.google.com/d/1","Doc")');
+  }, { now: NOW });
+
+  await t.test("a failing write during saveAgenda cannot wipe the tab: other weeks' rows survive", (sb, assert) => {
+    const CA = sb.eval('COLUMN.AGENDA');
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-06', sections: { Notes: [{ item: 'two weeks ago' }] } });
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-20', sections: { Notes: [{ item: 'next week' }] } });
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Notes: [{ item: 'this week, old' }] } });
+    const sheet = sb.mock.sheet('Agenda');
+    const getRange = sheet.getRange;
+    let thrown = 0;
+    sheet.getRange = function () {
+      const r = getRange.apply(this, arguments);
+      r.setValues = () => { thrown++; throw new Error('Service error: Spreadsheets (simulated)'); };
+      return r;
+    };
+    assert.throws(() => sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Notes: [{ item: 'this week, new' }] } }), /Service error: Spreadsheets/);
+    sheet.getRange = getRange;
+    assert.equal(thrown, 1);
+    assert.deepEqual(sb.mock.rows('Agenda').map((r) => r[CA.item]).sort(), ['next week', 'two weeks ago'], 'only the week being saved was affected');
+    assert.equal(sb.mock.locks.held, 0, 'lock released');
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Notes: [{ item: 'this week, retried' }] } });
+    assert.deepEqual(sb.mock.rows('Agenda').map((r) => r[CA.item]).sort(), ['next week', 'this week, retried', 'two weeks ago']);
+    // Deleting the last data rows of a nearly empty grid never trips "cannot delete all non-frozen rows"
+    const small = sb.mock.sheet('Agenda');
+    small.maxRows = small.getLastRow();
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: {} });
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-20', sections: {} });
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-06', sections: {} });
+    assert.deepEqual(sb.mock.rows('Agenda'), []);
+  }, { now: NOW });
 };

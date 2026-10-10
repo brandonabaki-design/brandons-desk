@@ -1,24 +1,26 @@
 # Brandon's Desk
 
-Private task tracker: Work and Personal tasks in one Google Sheet, an Apps Script web app on top, daily capture from work Gmail and Google Chat, a weekly agenda for the director meeting (downloadable as .xlsx) and material for the AI Learning Hub newsletter.
+Brandon's Desk is a private to-do tracker that lives in one Google Sheet, with a small web app on top that works on a phone and a laptop. Every school morning it reads work Gmail and Google Chat into an Inbox tab so nothing asked of you gets lost, and two Claude routines turn the sheet into a weekly agenda for the Tuesday director meeting (downloadable as .xlsx) and into material for the AI Learning Hub newsletter. Nothing is ever deleted: a task stays on one row until it is Done or Dropped.
 
-`docs/SPEC.md` is the contract (schema, API, rules, UI). `docs/research-notes.md` holds the verified Apps Script / clasp / Gmail / Chat facts the code relies on. `docs/routines.md` has the two Claude routines that write into the sheet. `docs/UI.md` describes the web page.
+- The sheet: https://docs.google.com/spreadsheets/d/1012Dbz6HB4dXD12Q5ClKm9LytSqgLHDIVz5_n6bHZ6w/edit (owner `brandon.abaki@gmail.com`, editor `bbaki@aisa.sch.ae`). Tabs: Work, Personal, Inbox, Agenda, Config, Log.
+- The web app: an Apps Script project owned by the **work** account, deployed "Execute as me / Only myself". Its `/exec` URL is yours after step 5 below.
+- The docs: `docs/SPEC.md` is the contract (schema, server functions, rules, pages); `docs/research-notes.md` holds the verified Apps Script / clasp / Gmail / Chat facts the code relies on; `docs/routines.md` has the two Claude routines; `docs/UI.md` describes the web page.
 
 ```
 apps-script/   the Apps Script project (pushed with clasp): *.gs server code, Index.html + Styles.html + App.html
-tests/         Node test harness, mock of the Apps Script services, fixtures, browser checks
+tests/         Node test harness, a mock of the Apps Script services, fixtures, browser checks
 docs/          SPEC.md, research-notes.md, routines.md, UI.md
 ```
 
-## Setup
+## Setup, in order
 
-Everything below happens in the **work** account (`bbaki@aisa.sch.ae`), which owns the Apps Script project and the web app. Command names are clasp 3.4.x.
+Everything below happens signed in as the **work** account (`bbaki@aisa.sch.ae`). Command names are for clasp 3.4.x. Steps 1–3 and 6 are the terminal; steps 4, 5 and 7 are the browser.
 
-### 1. Tools
+### 1. Tools (once)
 
-1. Install Node 22 or newer.
+1. Install Node 22 or newer (`node --version`).
 2. `npm install -g @google/clasp`, then `clasp --version` must print 3.4.x.
-3. In the browser, sign in as the work account and switch on **Google Apps Script API** at https://script.google.com/home/usersettings (without it clasp fails with "User has not enabled the Apps Script API").
+3. In the browser, signed in as the work account, switch on **Google Apps Script API** at https://script.google.com/home/usersettings. Without it every clasp command fails with "User has not enabled the Apps Script API".
 4. `clasp login` and approve every scope it asks for.
 
 ### 2. The repo
@@ -27,31 +29,39 @@ Everything below happens in the **work** account (`bbaki@aisa.sch.ae`), which ow
 git clone <this repo> brandons-desk
 cd brandons-desk
 npm install
-npx playwright install chromium     # once: the browser for the end-to-end check (see Tests)
+npx playwright install chromium     # once: the browser for the end-to-end half of npm test (or set CHROMIUM_PATH)
 npm test
 ```
 
-`npm test` must be green before anything is pushed. It needs no Google account: every check runs against an in-memory mock of the Apps Script services.
+`npm test` must be green before anything is pushed. It needs no Google account: every check runs against an in-memory mock of the Apps Script services (see *Tests* below).
 
 ### 3. Create the Apps Script project and push the code
 
 ```
 clasp create-script --type webapp --title "Brandon's Desk" --rootDir ./apps-script
+rm apps-script/Code.gs && git checkout -- apps-script/appsscript.json
 ```
 
-- The command writes `./.clasp.json` in the repo root (not inside `apps-script/`). The file is git-ignored; `.clasp.json.example` is the template.
-- It always pulls a stub `Code.gs` and a default `appsscript.json` into `apps-script/`, overwriting the committed manifest. Restore ours:
+- `clasp create-script` writes `./.clasp.json` in the repo root (not inside `apps-script/`). That file is git-ignored; `.clasp.json.example` is the template.
+- It also always pulls a stub `Code.gs` and a default `appsscript.json` into `apps-script/`, overwriting the committed manifest. The second line above removes the stub and restores ours.
+- Open `.clasp.json` and add the `filePushOrder` line from `.clasp.json.example`, so the file reads:
 
   ```
-  rm apps-script/Code.gs && git checkout -- apps-script/appsscript.json
+  {"scriptId": "<your id>", "rootDir": "./apps-script", "filePushOrder": ["apps-script/Config.gs", "apps-script/Util.gs"]}
   ```
 
-- Copy the `filePushOrder` line from `.clasp.json.example` into `.clasp.json`, so it reads `{"scriptId": "<your id>", "rootDir": "./apps-script", "filePushOrder": ["apps-script/Config.gs", "apps-script/Util.gs"]}` (Apps Script loads every file into one global scope; `Config.gs` and `Util.gs` must load first).
-- Then `clasp push -f` (`-f` overwrites the manifest without asking).
+  (Apps Script loads every file into one global scope; `Config.gs` and `Util.gs` must load first.)
+- Then:
 
-### 4. Run `setup` in the editor
+  ```
+  clasp push -f
+  ```
 
-`clasp open-script` opens the project. In the editor pick the function `setup` and press Run. The consent screen lists seven scopes; approve them all:
+  `-f` overwrites the manifest without asking.
+
+### 4. Run `setup` in the editor (browser)
+
+`clasp open-script` opens the project in the Apps Script editor. Pick the function **`setup`** in the toolbar and press **Run**. The consent screen lists seven scopes; approve them all:
 
 | Scope | Why |
 |---|---|
@@ -65,30 +75,41 @@ clasp create-script --type webapp --title "Brandon's Desk" --rootDir ./apps-scri
 
 What `setup()` does, once:
 
-1. Adopts the existing sheet `1012Dbz6HB4dXD12Q5ClKm9LytSqgLHDIVz5_n6bHZ6w` when the work account can open it (it is an editor on it); otherwise it creates a fresh "Brandon's Desk" sheet in the work Drive with the identical schema.
-2. Ensures the six tabs (Work, Personal, Inbox, Agenda, Config, Log) with their exact headers, data validation and date formats.
+1. Adopts the existing sheet (ID `1012Dbz6HB4dXD12Q5ClKm9LytSqgLHDIVz5_n6bHZ6w`) when the work account can open it; otherwise it creates a fresh "Brandon's Desk" sheet in the work Drive with the identical schema.
+2. Makes sure the six tabs exist with their exact headers, dropdowns, checkboxes and date formats.
 3. Stores the sheet ID as the Script Property `SHEET_ID`.
 4. Writes the Config defaults (keys, values and notes) into an empty Config tab.
 5. Installs the daily 06:15 (Asia/Dubai) `captureInbox` trigger.
 
-The execution log and the Log tab show the sheet URL. Then:
+The execution log (bottom of the editor) and the sheet's Log tab show the sheet URL. Then, still in the editor:
 
-- Run `selfTest` and read its log: it adds, completes and imports throwaway rows, probes Gmail and the Chat API, removes its rows and prints a report (`ok`/`FAIL` per step).
-- Run `installTriggers` once more **after** the consent above, so the trigger's token carries the Chat scopes (a trigger installed before consent runs without them and Chat falls back to email mode).
+- Run **`selfTest`** and read its log: it adds, completes and imports throwaway rows, probes Gmail and the Chat API, removes its rows and prints `ok` / `FAIL` per step.
+- Run **`installTriggers`** once more, **after** the consent above, so the trigger's token carries the Chat scopes. (A trigger installed before consent runs without them and Chat falls back to email mode.)
 
-If consent fails with **"This app is blocked"** or **"Error 400: admin_policy_enforced"**, the Workspace admin has restricted a scope (the two Chat scopes are Google "restricted" scopes). Remove the two Chat scopes and the Chat advanced service (`dependencies.enabledAdvancedServices`) from `apps-script/appsscript.json`, `clasp push -f`, and run `setup` again. Chat then runs in email mode (see step 8).
+If consent fails with **"This app is blocked"** or **"Error 400: admin_policy_enforced"**, see *Troubleshooting*.
 
 ### 5. First deployment (browser)
 
-clasp 3 cannot set the web-app access flags, so the first deployment is a browser step: in the editor, **Deploy → New deployment → type Web app → Execute as *Me* → Who has access *Only myself* → Deploy**. Copy the `/exec` URL (the app) and the **Deployment ID** (needed for later releases).
+clasp 3 cannot set the web-app access flags, so the first deployment is a browser step. In the editor:
 
-### 6. Later releases
+**Deploy → New deployment → Select type: Web app → Execute as: *Me* → Who has access: *Only myself* → Deploy.**
+
+The confirmation dialog shows two things to copy and keep:
+
+- the **Web app URL** ending in `/exec` — this is the app; bookmark it on your phone and laptop;
+- the **Deployment ID** — needed for every later release (step 6).
+
+To find them again later: editor → **Deploy → Manage deployments** (click the deployment to see its ID and URL), or `clasp list-deployments` in the terminal, which prints `- <deploymentId> @<version> - <description>`; the URL is then `https://script.google.com/macros/s/<deploymentId>/exec`.
+
+Open the `/exec` URL in a Chrome profile (or an incognito window) signed in **only** as the work account. Multi-login is not supported for Apps Script web apps: if the browser's default Google account is a different one, the page redirects to a broken `/macros/u/N/…` address.
+
+### 6. Every later release (terminal)
 
 ```
 clasp push -f && clasp create-deployment -i <deploymentId> -d "what changed"
 ```
 
-Check that **Deploy → Manage deployments** shows the new version (`clasp list-deployments` prints `- <deploymentId> @<version> - <description>`; a known clasp 3 issue sometimes needs the browser Edit → New version → Deploy instead). `clasp open-web-app <deploymentId>` opens the app. The `/dev` URL (editor → Deploy → Test deployments) always runs the latest pushed code for the owner, without a new deployment.
+Then check that **Deploy → Manage deployments** in the editor shows the new version. A known clasp 3 issue sometimes leaves the deployment on the old version; if so, do it in the browser instead: Manage deployments → pencil (Edit) → Version: *New version* → Deploy. (`clasp create-version` followed by `clasp update-deployment <deploymentId> -V <n>` is the two-step equivalent.) `clasp open-web-app <deploymentId>` opens the app. The `/dev` URL (editor → Deploy → Test deployments) always runs the latest pushed code for the owner, without a new deployment, which is handy for trying a change before releasing it.
 
 ### 7. If `setup` created a new sheet
 
@@ -96,34 +117,55 @@ Paste the new sheet's URL to Claude so the routines point at it, and replace the
 
 ### 8. Google Chat (optional)
 
-Chat needs no extra setup: the manifest's Chat advanced service switches the API on and the two read scopes are approved in step 4. If `selfTest` or the Log shows `CHAT_API_BLOCKED … SERVICE_DISABLED`, remove and re-add the **Google Chat API** under *Services* in the editor and run `selfTest` again. If it persists, the fallback is a standard GCP project with the Chat API enabled (Project Settings → Change project), which the school may not allow; Chat then runs in **email mode**: the capture parses the reminder emails Google sends from `chat-noreply@google.com`, which only exist for direct messages and @mentions left unread for more than 12 hours, so it is delayed and partial (the Inbox page says so). Config `CHAT_ENABLED = FALSE` turns Chat capture off entirely.
+Chat needs no extra setup: the manifest's Chat advanced service switches the API on in the script's own Cloud project, and the two read scopes were approved in step 4. `selfTest` reports whether the API answers.
 
-If `GmailApp` ever reports insufficient permissions after consent, replace `https://www.googleapis.com/auth/gmail.readonly` in `appsscript.json` with `https://mail.google.com/`, `clasp push -f`, and re-run any function from the editor to re-consent.
+- If `selfTest` or the Log tab shows `CHAT_API_BLOCKED … SERVICE_DISABLED`: in the editor, under **Services** (the `+` next to Services in the left bar), remove **Google Chat API** and add it again, then run `selfTest` again.
+- If it still fails, the remaining option is a standard Google Cloud project with the Chat API enabled (editor → Project Settings → Change project), which the school may not allow. Chat then runs in **email mode**: the capture parses the reminder emails Google sends from `chat-noreply@google.com`. Those only exist for direct messages and @mentions left unread for more than 12 hours, so email mode is delayed and partial; the Inbox page shows a banner saying so.
+- Config `CHAT_ENABLED = FALSE` turns Chat capture off entirely.
 
-### 9. One-time checks
+### 9. One-time checks in the work account
 
-- Open the `/exec` URL in a Chrome profile (or incognito window) signed in **only** as the work account: multi-login is unsupported for Apps Script web apps and redirects to a broken `/macros/u/N/` URL.
+- Open the `/exec` URL in a Chrome profile signed in only as the work account (see step 5).
 - Compare one Chat link that the capture wrote into the Inbox tab with the real space.
-- Search work Gmail for `from:chat-noreply@google.com`; if a reminder exists, check that the Inbox row the email fallback would create looks right. To see the fallback actually run: temporarily remove the two Chat scopes and the Chat advanced service from `apps-script/appsscript.json`, `clasp push -f`, run `runCaptureNow` from the editor (the Log shows `CHAT_API_BLOCKED` and the row lands in Inbox with Source key `chat:email:…`), then restore the manifest and push again. Otherwise compare the row with the format in `docs/SPEC.md` section 3.
+- Search work Gmail for `from:chat-noreply@google.com`. If a reminder exists, check that the Inbox row the email fallback would create looks right: Source `Chat`, From = the sender named in the subject, Subject = the space name plus "(email notification)", Snippet = the quoted message, Link = the first chat.google.com link in the mail, Source key `chat:email:<message id>`. To watch the fallback actually run: temporarily remove the two Chat scopes and the Chat advanced service from `apps-script/appsscript.json`, `clasp push -f`, run `runCaptureNow` from the editor (the Log shows `CHAT_API_BLOCKED` and the row lands in Inbox), then restore the manifest (`git checkout -- apps-script/appsscript.json`) and push again.
 
 ## Everyday use
 
-- **Changing Config**: edit the *Value* column of the Config tab. The keys and the *Notes* column are written by `setup()`; the app reads the tab on every request (12 rows, no cache across executions), so a change applies to the next call. `TIMEZONE` must be an IANA id such as `Asia/Dubai`; anything else falls back to Asia/Dubai with a WARN in the Log.
-- **Re-running capture**: Inbox page → *Run capture now*, or run `runCaptureNow` from the editor. `captureInbox` is the trigger entry point and skips Saturdays and Sundays regardless of how it is started; *Run capture now* / `runCaptureNow` always run.
-- **Where to look when something is off**: the Log tab (trigger runs, heals, errors with stack traces) and the editor's Executions page.
-- **Newsletter and History date ranges** default to today and the 28 days before it, inclusive.
-- **Downloads**: the Agenda and Newsletter `.xlsx` files have real hyperlinks and column widths; the header row is plain text because the pinned SheetJS 0.18.5 community build cannot write cell styles. If the SheetJS CDN does not load, the same rows download as a UTF-8 CSV and a toast says so.
+- **The pages.** Today (quick-add, tick off, edit), Inbox (promote or ignore captured mail and chat, *Run capture now*), Import (paste a list or choose an .html/.txt file), Agenda (next Tuesday's draft, edit, Save, Download .xlsx, Copy as text), Newsletter (Copy as Markdown, Download .xlsx), History (Done/Dropped, reopen).
+- **Changing Config.** Edit the *Value* column of the Config tab in the sheet. The keys and the *Notes* column are written by `setup()`; the app reads the tab on every request (12 rows, nothing cached between requests), so a change applies to the next click. Keys: `ALLOWED_EMAILS`, `TIMEZONE`, `MEETING_DAY`, `GMAIL_QUERY`, `GMAIL_LOOKBACK_DAYS`, `CHAT_ENABLED`, `CHAT_LOOKBACK_DAYS`, `NEWSLETTER_KEYWORDS`, `DEFAULT_QUICKADD_CATEGORY`, `PROJECTS`, `DIRECTOR_NAME`. Comma-separated where plural. `TIMEZONE` must be an IANA id such as `Asia/Dubai`; anything else falls back to Asia/Dubai with a WARN in the Log.
+- **Running capture by hand.** Inbox page → **Run capture now** (the toast shows the Gmail and Chat counts and the Chat mode: `api`, `email` or `off`), or in the editor run `runCaptureNow`. The scheduled `captureInbox` skips Saturdays and Sundays; *Run capture now* always runs.
+- **Releasing a code change.** `npm test`, then step 6.
+- **Where to look when something is off.** The Log tab (trigger runs, healed rows, errors with stack traces) and the editor's **Executions** page.
+- **Rows added by Claude or by hand.** The app fills in a blank ID, Created, Status, Priority or Updated on every read (`healSheet`) and notes what it fixed in the Log, so a row typed straight into the sheet is fine.
+- **Downloads.** The Agenda and Newsletter `.xlsx` files have real hyperlinks and column widths; the header row is plain text because the pinned SheetJS build cannot write cell styles. If the SheetJS CDN does not load, the same rows download as a UTF-8 CSV and a toast says so.
+
+## Troubleshooting
+
+| Symptom | What it means | What to do |
+|---|---|---|
+| clasp says **"User has not enabled the Apps Script API"** | The per-user toggle is off. | Signed in as the work account, switch on Google Apps Script API at https://script.google.com/home/usersettings, then retry. |
+| `clasp create-script` or `clasp push` fails with a permission error, or the editor will not open | The Workspace admin may have Apps Script switched off for your organisational unit. | Ask the admin to enable it under **Admin console → Apps → Google Workspace → Drive and Docs → Google Apps Script** (on by default since Apps Script became a core service in June 2026). Nothing in the code can work around that setting. |
+| Consent screen says **"This app is blocked"** or **"Error 400: admin_policy_enforced"** | The admin has restricted one of the requested scopes. The two Chat scopes are Google "restricted" scopes, so they are the usual cause; the block stops Sheets and Gmail too. | Remove the two Chat scopes (`chat.spaces.readonly`, `chat.messages.readonly`) and the `dependencies.enabledAdvancedServices` block from `apps-script/appsscript.json`, `clasp push -f`, run `setup` again and approve the remaining five scopes. Chat then runs in email mode (step 8). |
+| Log tab shows **`CHAT_API_BLOCKED … SERVICE_DISABLED`** | The Chat API is not enabled in the script's Cloud project. | Step 8: remove and re-add the Google Chat API under Services, run `selfTest`. |
+| Log tab shows **`CHAT_API_BLOCKED … ACCESS_TOKEN_SCOPE_INSUFFICIENT`** (usually only in trigger runs) | The trigger was installed before the Chat scopes were approved, so its token lacks them. | Run any function from the editor to re-consent if asked, then run `installTriggers` again. |
+| Log tab shows **`CHAT_API_BLOCKED`** with another reason, or HTTP 401 | The Chat API refused the token for this run. | Capture carried on in email mode for that run. If it persists, check step 8; otherwise `CHAT_ENABLED = FALSE` in Config. |
+| **"You do not have permission to call …"** / "Specified permissions are not sufficient" at run time | The manifest's `oauthScopes` list was changed after consent (declaring scopes turns auto-detection off). | Run any function from the editor to re-consent, then `installTriggers`. If it is `GmailApp` after consent, replace `https://www.googleapis.com/auth/gmail.readonly` in `appsscript.json` with `https://mail.google.com/`, `clasp push -f`, re-consent. |
+| The `/exec` page says "Sorry, unable to open the file at this time" or redirects to `/macros/u/1/…` | You are not the deployer, or the browser is signed in to several Google accounts. | Use a Chrome profile or incognito window signed in only as the work account. |
+| The page shows **"Not allowed"** | Your email is not in Config `ALLOWED_EMAILS`. | Add it (comma-separated) in the Config tab. |
+| A release does not show up in the app | The deployment stayed on the old version (known clasp 3 issue). | Deploy → Manage deployments → Edit → New version → Deploy. |
+| `npm test` says it cannot find a browser | Playwright's Chromium is not installed. | `npx playwright install chromium`, or set `CHROMIUM_PATH` to a Chrome/Chromium binary. |
+| Capture ran but the Inbox is empty | Normal on a weekend, or everything in the lookback window was from you, automated, or already captured. | The Log row for `captureInbox` says what happened; `GMAIL_QUERY` and the lookback days are in Config. |
 
 ## Tests
 
 | Command | What it runs |
 |---|---|
-| `npm test` | `tests/run.js` (unit tests over the Apps Script mock) and then `tests/e2e.js` (the real page in headless Chromium talking to the real server code) |
+| `npm test` | `tests/run.js` (unit tests over the Apps Script mock, no Google services) and then `tests/e2e.js` (the real page in headless Chromium talking to the real server code through a `google.script.run` shim) |
 | `npm run test:unit` | only `tests/run.js`; `node tests/run.js <filter>` runs matching test files |
 | `npm run test:e2e` | only the end-to-end check |
-| `npm run ui` | `tests/ui/render.js`: the page against a fixture shim (HTML file import, dark mode, downloads read back, boot failure); screenshots under `/tmp/claude-0/brandons-desk-ui/` |
+| `npm run ui` | `tests/ui/render.js`: the page against a fixture shim (HTML file import, dark mode, downloads read back, SheetJS missing, boot failure); screenshots under `/tmp/claude-0/brandons-desk-ui/` |
 
-The browser checks need a Chromium. After `npm install`, run `npx playwright install chromium` once (Playwright downloads its own build, about 150 MB); or set `CHROMIUM_PATH` to a Chrome/Chromium binary. A pre-installed Chromium at `/opt/pw-browsers/chromium` is used automatically when it exists. Nothing in the tests calls Google.
+The browser checks need a Chromium: after `npm install`, run `npx playwright install chromium` once (about 150 MB), or set `CHROMIUM_PATH` to a Chrome/Chromium binary. Nothing in the tests calls Google.
 
 ## Claude routines
 

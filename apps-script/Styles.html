@@ -81,7 +81,7 @@ button { font: inherit; }
   .topbar-inner { flex-wrap: wrap; gap: 0; padding-bottom: 0; }
   .brand { padding: 12px 0 6px; }
   .tabs { margin-left: -16px; margin-right: -16px; width: calc(100% + 32px); padding: 0 12px; gap: 0; }
-  .tabs a { padding: 8px 5px 9px; font-size: 13px; gap: 4px; }
+  .tabs a { padding: 9px 5px 10px; font-size: 13px; gap: 4px; } /* 40 px tall tap target on phones */
   .tab-long { display: none; }
   .count { font-size: 10.5px; padding: 1px 5px; }
 }
@@ -123,7 +123,7 @@ input[type="date"].input { width: auto; min-width: 150px; }
 /* "Open ↗" text links in lists: a 40 px tall tap target without changing the layout much */
 a.small { display: inline-flex; align-items: center; min-height: 40px; padding: 0 2px; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
-.seg-btn { font: inherit; font-size: 14px; font-weight: 500; border: 0; background: transparent; color: var(--ink-2); padding: 0 12px; min-height: 38px; cursor: pointer; }
+.seg-btn { font: inherit; font-size: 14px; font-weight: 500; border: 0; background: transparent; color: var(--ink-2); padding: 0 12px; min-height: 40px; cursor: pointer; } /* 40 px + the .seg border = 42 px, like .btn */
 .seg-btn.active { background: var(--accent); color: var(--accent-ink); }
 .label { font-size: 13px; font-weight: 500; color: var(--ink-2); display: block; margin-bottom: 4px; }
 .label.inline { display: inline; margin: 0; }
@@ -180,7 +180,8 @@ details.group[open] > summary h3::before { content: "▾ "; }
 /* The checkbox keeps its 20 px glyph inside a 40 x 40 clickable label; negative margins keep the row layout unchanged. */
 .task-check-wrap { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; margin: -10px -8px -10px -8px; cursor: pointer; }
 .task-check { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); cursor: pointer; }
-.task-title { background: none; border: 0; padding: 0; margin: 0; text-align: left; font: inherit; color: var(--ink); cursor: pointer; width: 100%; line-height: 1.35; overflow-wrap: anywhere; }
+/* 6 px of vertical hit area above and below the text (a one-line title is 32 px tall to tap) without moving the text. */
+.task-title { background: none; border: 0; padding: 6px 0; margin: -6px 0; text-align: left; font: inherit; color: var(--ink); cursor: pointer; width: 100%; line-height: 1.35; overflow-wrap: anywhere; }
 .task-title:hover { color: var(--accent); }
 .task.done .task-title { color: var(--ink-3); text-decoration: line-through; }
 .task.pending { opacity: 0.55; }
@@ -244,7 +245,9 @@ details.group[open] > summary h3::before { content: "▾ "; }
   .prow .pr-title { grid-column: auto; }
   .prow .pr-sub { display: contents; }
 }
-.prow input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+.prow input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+/* The Include checkbox keeps its 18 px glyph inside a 40 x 40 label (the first grid column is 28 px wide; negative margins keep the row layout). */
+.pr-check-wrap { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; margin: -11px -6px; cursor: pointer; }
 .result ul { margin: 6px 0 0; padding-left: 18px; }
 
 /* Agenda */
@@ -275,7 +278,8 @@ details.group[open] > summary h3::before { content: "▾ "; }
 .toast.error { background: var(--danger); color: var(--danger-ink); }
 .toast.ok { background: var(--accent); color: var(--accent-ink); }
 .toast .msg { flex: 1 1 auto; overflow-wrap: anywhere; }
-.toast .act { font: inherit; font-weight: 700; background: transparent; border: 1px solid currentColor; color: inherit; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+/* Undo / Discard edits: the only time-limited control on the page gets the same 40 px target as everything else (the negative margin keeps the toast 40 px tall). */
+.toast .act { font: inherit; font-weight: 700; background: transparent; border: 1px solid currentColor; color: inherit; border-radius: 6px; padding: 4px 14px; min-height: 40px; margin: -10px 0; cursor: pointer; }
 .toast .x { font: inherit; background: transparent; border: 0; color: inherit; cursor: pointer; opacity: 0.7; padding: 0; display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 40px; margin: -10px -10px -10px 0; }
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 </style>

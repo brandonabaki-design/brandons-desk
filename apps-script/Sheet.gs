@@ -233,7 +233,7 @@ function healSheet(category) {
   return withLock(() => {
     const scan = scanTaskRows_(sheet, tabName, cols);
     if (!scan.changedRows.length) return result;
-    writeRowRuns_(sheet, scan.values, scan.changedRows, cols, scan.formulas);
+    writeRowRuns_(sheet, scan.values, scan.changedRows, cols, scan.formulas, scan.original);
     result.fixed = scan.changedRows.length;
     result.details = scan.counts;
     const summary = Object.keys(scan.counts).map((k) => k + ' ' + scan.counts[k]).join(', ');
@@ -244,40 +244,47 @@ function healSheet(category) {
 }
 
 /**
- * Writes the changed rows back in as few setValues() calls as possible: each run of
- * consecutive row indexes becomes one block write. Strings get the formula guard, except a
- * cell that scanTaskRows_ carried over as the formula the sheet already holds.
+ * Writes the healed cells back: for every changed row, only the cells that differ from what
+ * the sheet held (as writeRowChanges does), one setValues() per run of consecutive changed
+ * columns. A cell the heal did not touch is never rewritten, so a Link or Title that holds a
+ * rich-text hyperlink (Insert → Link in the sheet reads through getValues() as its plain label)
+ * keeps its link, and a formula cell keeps its formula. Strings get the formula guard.
  */
-function writeRowRuns_(sheet, values, changedRows, cols, formulas) {
-  const sorted = changedRows.slice().sort((a, b) => a - b);
-  let i = 0;
-  while (i < sorted.length) {
-    let j = i;
-    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
-    const first = sorted[i];
-    const count = sorted[j] - first + 1;
-    const block = [];
-    for (let r = first; r < first + count; r++) {
-      const f = (formulas && formulas[r]) || [];
-      block.push(values[r].map((v, c) => (f[c] && v === f[c] ? v : guardCell(v))));
+function writeRowRuns_(sheet, values, changedRows, cols, formulas, original) {
+  changedRows.slice().sort((a, b) => a - b).forEach((r) => {
+    const f = (formulas && formulas[r]) || [];
+    const before = (original && original[r]) || [];
+    const changed = [];
+    for (let c = 0; c < cols; c++) {
+      if (f[c]) continue; // scanTaskRows_ leaves formula cells alone
+      if (!cellEquals_(before[c], guardCell(values[r][c]))) changed.push(c);
     }
-    sheet.getRange(first + 2, 1, count, cols).setValues(block);
-    i = j + 1;
-  }
+    let i = 0;
+    while (i < changed.length) {
+      let j = i;
+      while (j + 1 < changed.length && changed[j + 1] === changed[j] + 1) j++;
+      const first = changed[i];
+      const count = changed[j] - first + 1;
+      sheet.getRange(r + 2, first + 1, 1, count).setValues([values[r].slice(first, first + count).map(guardCell)]);
+      i = j + 1;
+    }
+  });
 }
 
 /**
  * Reads a task tab and computes the healed rows in memory.
- * Returns {values, changedRows (0-based indexes into values), counts, formulas, warnings}.
+ * Returns {values, changedRows (0-based indexes into values), counts, formulas, warnings,
+ * original (the cells as read, so the writer can diff them)}.
  * A cell that holds a formula (a =HYPERLINK in Link, say) is carried as that formula and
  * left alone, so a heal of the row never replaces it by its display value.
  */
 function scanTaskRows_(sheet, tabName, cols) {
   const C = COLUMN.TASK;
   const last = sheet.getLastRow();
-  if (last < 2) return { values: [], changedRows: [], counts: {}, formulas: [], warnings: [] };
+  if (last < 2) return { values: [], changedRows: [], counts: {}, formulas: [], warnings: [], original: [] };
   const range = sheet.getRange(2, 1, last - 1, cols);
   const values = range.getValues();
+  const original = values.map((row) => row.slice());
   const formulas = range.getFormulas();
   const ids = new Set();
   values.forEach((row) => {
@@ -360,7 +367,7 @@ function scanTaskRows_(sheet, tabName, cols) {
     }
     if (changed) changedRows.push(i);
   });
-  return { values: values, changedRows: changedRows, counts: counts, formulas: formulas, warnings: warnings };
+  return { values: values, changedRows: changedRows, counts: counts, formulas: formulas, warnings: warnings, original: original };
 }
 
 /** 'Work' | 'Personal' for a category (throws a user error otherwise). */
@@ -422,6 +429,8 @@ function ensureTab_(ss, name) {
     if (mismatch) {
       warning = name + ': header row differs from the schema (' + actual.join(' | ') + ')';
     }
+    // The live sheet pre-dates setup(): give its text columns the plain-text format too (idempotent).
+    withLock(() => { applyTextFormats_(sheet, name); });
   }
   try {
     if (sheet.getFrozenRows() < 1) sheet.setFrozenRows(1);
@@ -459,6 +468,36 @@ function dataRows_(sheet) {
   return Math.max(sheet.getMaxRows() - 1, 1);
 }
 
+/** 0-based indexes of the free-text columns of a tab (everything that is not a date, number, boolean or enum). */
+function textColumns_(name) {
+  const T = COLUMN.TASK;
+  const I = COLUMN.INBOX;
+  const A = COLUMN.AGENDA;
+  switch (name) {
+    case TABS.WORK:
+    case TABS.PERSONAL: return [T.title, T.details, T.source, T.link, T.note, T.project, T.sourceKey];
+    case TABS.INBOX: return [I.from, I.subject, I.snippet, I.link, I.sourceKey, I.taskId];
+    case TABS.AGENDA: return [A.item, A.detail, A.link, A.taskId];
+    case TABS.CONFIG: return [COLUMN.CONFIG.value];
+    case TABS.LOG: return [COLUMN.LOG.message];
+    default: return [];
+  }
+}
+
+/**
+ * Plain-text number format ('@') on the free-text columns. Range.setValue(s) and appendRow
+ * write strings with user-entered semantics: a Chat message or mail subject that is just
+ * "10/12", "1-2", "3.50", "007" or "+971501234567" would otherwise land as a Date or a number
+ * and read back as "2026-10-12T00:00:00+04:00", 3.5 or 7. With '@' on the column the string
+ * is stored as typed. Idempotent; also run on existing tabs by ensureTab_.
+ */
+function applyTextFormats_(sheet, name) {
+  const rows = dataRows_(sheet);
+  textColumns_(name).forEach((idx) => {
+    sheet.getRange(2, idx + 1, rows, 1).setNumberFormat('@');
+  });
+}
+
 function applyTabFormatting_(sheet, name) {
   const headers = HEADERS[name];
   const header = sheet.getRange(1, 1, 1, headers.length);
@@ -466,6 +505,7 @@ function applyTabFormatting_(sheet, name) {
   sheet.setFrozenRows(1);
   const rows = dataRows_(sheet);
   const col = (idx) => sheet.getRange(2, idx + 1, rows, 1);
+  applyTextFormats_(sheet, name);
   if (name === TABS.WORK || name === TABS.PERSONAL) {
     const C = COLUMN.TASK;
     col(C.source).setDataValidation(listValidation_(SOURCES, false));

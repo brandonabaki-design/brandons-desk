@@ -232,12 +232,20 @@ function findInbox_(inboxId) {
 
 /**
  * promoteInbox: {inboxId, category, title?, project?, due?, priority?} → {task}.
- * Creates the task (Source, Link and Source key copied) and marks the row Promoted.
+ * Creates the task (Source, Link and Source key copied) and marks the row Promoted. A row
+ * that is already Promoted returns the task it was promoted to (the UI hides the button, but
+ * the call is reachable): promoting it again into the other list must not create a second
+ * task with the same Source key.
  */
 function promoteInbox_(input) {
   const inp = input || {};
   const item = findInbox_(inp.inboxId);
   const category = taskTabName(inp.category || item.categoryHint);
+  if (item.status === 'Promoted' && item.taskId) {
+    const tab = item.taskId.charAt(0) === 'P' ? TABS.PERSONAL : TABS.WORK;
+    const already = readTasks(tab).find((t) => t.id === item.taskId);
+    if (already) return { task: already, duplicate: true };
+  }
   const title = validTitle_(str(inp.title).trim() || item.subject || item.snippet);
   const details = ['From ' + item.from, item.snippet].filter(Boolean).join(': ');
   const spec = {

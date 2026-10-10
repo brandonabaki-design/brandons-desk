@@ -147,6 +147,13 @@ function run() {
     ['Work', 'Plain one', '', false, '', 'Normal'], ['Personal', 'Hub thing', 'AI Learning Hub', true, '2026-10-14', 'High'], ['Work', 'No project but later', '', false, '', 'Normal']]);
   assert.equal(p.previewRowsToText([{ include: true, category: 'Work', title: 'Only one', project: 'X', done: false, due: '', priority: 'Normal' }]), '# X\n[Work] Only one');
   assert.equal(p.normaliseTitleKey('Re: Email the Parents!'), 'email the parents');
+  // SPEC 6 "lines ≤ 2 chars are skipped" is measured after stripping, as the server does: a 2-char bulleted title is skipped too
+  eq(p.parseImportText('- ab\n* [x] ok\n[W] - xy !\n- abc\n[P] ok', 'Work').map((r) => r.title), ['abc']);
+  // import link matching keys on the title the server stores (cut to 140, trailing "!" marks dropped)
+  assert.equal(p.importTitleKey('x'.repeat(150)), p.importTitleKey('x'.repeat(140)));
+  assert.notEqual(p.importTitleKey('x'.repeat(150)), p.normaliseTitleKey('x'.repeat(150)));
+  assert.equal(p.importTitleKey('  Call   mum !!'), 'call mum');
+  assert.equal(p.importTitleKey('Re: Email the Parents!'), 'email the parents');
   console.log('pure-check: ok (' + Object.keys(p).filter((k) => typeof p[k] === 'function').length + ' helpers)');
 }
 

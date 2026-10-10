@@ -35,6 +35,11 @@ module.exports = async function (t) {
     assert.equal(parseDate('2026-02-29'), null, '2026 is not a leap year');
     assert.equal(parseDate('2028-02-29').toISOString(), '2028-02-28T20:00:00.000Z', '2028 is');
     assert.equal(parseDate('2026-10-10 25:00'), null);
+    // The Date.parse fallback needs an explicit four-digit year: V8 would otherwise resolve these to the year 2001.
+    ['Oct 14', '14 Oct', 'Tue 14 Oct', '1', '14/10', 'next week', 'Oct'].forEach((s) => assert.equal(parseDate(s), null, JSON.stringify(s) + ' is not guessed as 2001'));
+    assert.equal(toDateString(parseDate('14 Oct 2026')), '2026-10-14', 'an explicit year still parses');
+    assert.equal(parseDate('Thu, 08 Oct 2026 06:00:00 GMT').toISOString(), '2026-10-08T06:00:00.000Z', 'RFC 2822 still parses');
+    assert.equal(toDateString('Oct 14'), '');
     assert.equal(toDateString('2026-02-30'), '');
     assert.equal(toDateString('2026-04-31'), '');
     assert.equal(toDateString(new Date('2026-10-09T20:00:00Z')), '2026-10-10');

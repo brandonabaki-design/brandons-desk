@@ -179,19 +179,26 @@ function readConfig() {
 /** IANA zone ids: "Asia/Dubai", "America/Argentina/Buenos_Aires", "Etc/GMT+4", plus bare UTC/GMT. */
 const TIMEZONE_RE_ = /^(UTC|GMT|[A-Za-z]+(\/[A-Za-z0-9_+\-]+){1,2})$/;
 
+/** Zone ids that legitimately sit at +0000 all year round (UTC/GMT aliases, Etc/*, the West African GMT zones). */
+const GMT_ZONE_RE_ = /^(UTC|GMT|Etc\/.+|Africa\/(Abidjan|Accra|Bamako|Banjul|Bissau|Conakry|Dakar|Freetown|Lome|Monrovia|Nouakchott|Ouagadougou|Sao_Tome|Timbuktu)|Atlantic\/(Reykjavik|St_Helena)|America\/Danmarkshavn)$/;
+
 /**
- * Keeps a Config TIMEZONE only when it looks like an IANA id and Utilities.formatDate accepts
- * it. Java maps an unknown id ("Dubai", "GST") to GMT without throwing, which would silently
- * shift every "today" by four hours; such values fall back to Asia/Dubai with a WARN in the Log.
+ * Keeps a Config TIMEZONE only when it looks like an IANA id and the runtime really knows it.
+ * Java's TimeZone.getTimeZone maps an unknown id ("Dubai", "GST", a typo such as "Asia/Dubay")
+ * to GMT WITHOUT throwing, which would silently shift every "today" by four hours. So the check
+ * does not rely on an exception: the zone is formatted at two instants (January and July) and an
+ * offset of +0000 at both means "unknown" unless the id is one of the zones that really are GMT.
+ * Rejected values fall back to Asia/Dubai with a WARN in the Log.
  */
 function validTimeZone_(tz) {
   const s = String(tz === null || tz === undefined ? '' : tz).trim();
   if (s && TIMEZONE_RE_.test(s)) {
     try {
-      Utilities.formatDate(new Date(), s, 'yyyy');
-      return s;
+      const jan = Utilities.formatDate(new Date(Date.UTC(2026, 0, 1, 12)), s, 'Z');
+      const jul = Utilities.formatDate(new Date(Date.UTC(2026, 6, 1, 12)), s, 'Z');
+      if (!(jan === '+0000' && jul === '+0000') || GMT_ZONE_RE_.test(s)) return s;
     } catch (e) {
-      // unknown zone in this runtime
+      // a runtime that throws for an unknown zone: fall through to the fallback
     }
   }
   if (s && s !== TIMEZONE) {

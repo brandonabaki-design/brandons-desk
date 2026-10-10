@@ -11,19 +11,26 @@ module.exports = async function (t) {
     sb.mock.sheet('Work').getRange(5, 1, 1, 16).setValues([
       ['', '2026-10-02', 'Second blank id', '', '', '', 'Done', '2026-10-03', '', '', '', '', '', 'High', '', '']
     ]);
-    const before = sb.gs.todayDubai();
     const writesBefore = sb.mock.writes;
+    sb.mock.cellWrites.length = 0;
     const result = sb.gs.healSheet('Work');
     assert.equal(result.fixed, 3, 'three content rows changed');
-    assert.equal(sb.mock.writes - writesBefore, 3, 'rows 2-3 written as one block, row 5 as another, plus the Log row');
+    // Only the cells that changed are written, one setValues() per run of consecutive changed columns:
+    // row 2: ID..Title, Status, Project..Priority, Updated (4); row 3: Created, Updated (2); row 5: ID..Created, Done,
+    // Newsletter..Discuss, Updated (4); plus the Log row. A whole-row rewrite would strip rich text from untouched cells.
+    assert.equal(sb.mock.writes - writesBefore, 11, 'per-cell runs: 4 + 2 + 4 writes, plus the Log row');
+    const C = sb.eval('COLUMN.TASK');
+    const touched = sb.mock.cellWrites.filter((w) => w.sheet === 'Work').map((w) => w.row + ':' + (w.col - 1));
+    [C.details, C.source, C.link, C.note, C.sourceKey].forEach((c) => assert.ok(touched.indexOf('2:' + c) < 0, 'unchanged row-2 cell ' + c + ' is not written'));
+    [C.id, C.title, C.status, C.project, C.done, C.note].forEach((c) => assert.ok(touched.indexOf('3:' + c) < 0, 'unchanged row-3 cell ' + c + ' is not written'));
+    assert.ok(touched.indexOf('3:' + C.created) >= 0 && touched.indexOf('2:' + C.title) >= 0, 'changed cells are written');
     const rows = sb.mock.rows('Work');
     assert.equal(rows.length, 4, 'blank row 4 is preserved, not filled');
     assert.ok(rows[2].every((v) => v === ''), 'blank row stays blank');
-    const C = sb.eval('COLUMN.TASK');
     // Row 1
     assert.match(rows[0][C.id], /^W-[a-z0-9]{8}$/);
     assert.equal(Object.prototype.toString.call(rows[0][C.created]), '[object Date]');
-    assert.equal(sb.gs.formatDate(rows[0][C.created]), before);
+    assert.equal(sb.gs.formatDate(rows[0][C.created]), '2026-10-08', 'Created = today (fixed clock)');
     assert.equal(rows[0][C.title], 'Title with spaces');
     assert.equal(rows[0][C.status], 'Open');
     assert.equal(rows[0][C.priority], 'Normal');
@@ -51,7 +58,48 @@ module.exports = async function (t) {
     assert.equal(sb.gs.healSheet('Work').fixed, 0);
     assert.equal(sb.gs.healSheet('Personal').fixed, 0);
     assert.throws(() => sb.gs.healSheet('Inbox'), /Category must be Work or Personal/);
+  }, { now: '2026-10-08T06:00:00Z' });
+
+  await t.test('healSheet leaves a rich-text hyperlink alone in a cell it did not change (only changed cells are written)', (sb, assert) => {
+    const C = sb.eval('COLUMN.TASK');
+    // A routine row without an ID; Brandon added a sheet hyperlink (Insert → Link) in Link and a trailing space in Title.
+    sb.mock.seed('Work', [['', '2026-10-01', 'Routine row with a sheet link ', '', 'Claude', '', 'Open', '', '', '', '', '', '', 'Normal', '', '2026-10-01 08:00']]);
+    sb.mock.setRichText('Work', 2, C.link + 1, 'Unit plan', 'https://docs.google.com/document/d/1/edit');
+    assert.equal(sb.mock.rows('Work')[0][C.link], 'Unit plan', 'getValues() shows the label, as in Sheets');
+    const r = sb.gs.healSheet('Work');
+    assert.equal(r.details.id, 1);
+    assert.equal(r.details.whitespace, 1);
+    assert.equal(r.details.checkbox, 2);
+    assert.equal(sb.mock.richText('Work', 2, C.link + 1), 'https://docs.google.com/document/d/1/edit', 'the hyperlink survives the heal');
+    assert.equal(sb.mock.rows('Work')[0][C.link], 'Unit plan');
+    assert.equal(sb.mock.rows('Work')[0][C.title], 'Routine row with a sheet link');
+    assert.match(sb.mock.rows('Work')[0][C.id], /^W-[a-z0-9]{8}$/);
+    assert.equal(sb.gs.healSheet('Work').fixed, 0);
+    // The same for a task-save path: ticking the task writes Status/Done/Updated only
+    const task = sb.gs.readTasks('Work')[0];
+    sb.gs.completeTask_({ category: 'Work', id: task.id });
+    assert.equal(sb.mock.richText('Work', 2, C.link + 1), 'https://docs.google.com/document/d/1/edit');
+    // An explicit Link edit does replace it (a plain write drops rich text, as in Sheets)
+    sb.gs.updateTask_({ category: 'Work', id: task.id, patch: { link: 'https://new.example/' } });
+    assert.equal(sb.mock.richText('Work', 2, C.link + 1), '');
   });
+
+  await t.test('healSheet does not guess a year: a Due such as "Oct 14" is cleared with a WARN, never written as 2001', (sb, assert) => {
+    const C = sb.eval('COLUMN.TASK');
+    sb.mock.seed('Work', [
+      ['W-ny1', '2026-10-01', 'Routine row', '', 'Claude', '', 'Open', '', '', '', false, false, 'Oct 14', 'Normal', '', '2026-10-01 08:00'],
+      ['W-ny2', '2026-10-01', 'Routine row 2', '', 'Claude', '', 'Open', '', '', '', false, false, '14 Oct 2026', 'Normal', '', '2026-10-01 08:00']
+    ]);
+    const r = sb.gs.healSheet('Work');
+    assert.equal(r.details.badDate, 1);
+    const rows = sb.mock.rows('Work');
+    assert.equal(rows[0][C.due], '', 'no-year text is cleared');
+    assert.equal(sb.gs.formatDate(rows[1][C.due]), '2026-10-14', 'a date with an explicit year still converts');
+    const warn = sb.mock.logRows().find((row) => row.fn === 'healSheet' && row.level === 'WARN');
+    assert.match(warn.message, /Work row 2 \(W-ny1\): Due "Oct 14" is not a date, cleared/);
+    const q = sb.gs.buildQuestions(sb.gs.readTasks('Work'), sb.gs.agendaWindow('2026-10-13'), '2026-10-08');
+    assert.ok(!q.some((x) => /2001/.test(x.text)), 'no "overdue (due 2001-…)" question');
+  }, { now: '2026-10-08T06:00:00Z' });
 
   await t.test('healSheet fills a blank Done date when Status is Done, from Updated else today', (sb, assert) => {
     const C = sb.eval('COLUMN.TASK');
@@ -283,6 +331,10 @@ module.exports = async function (t) {
     assert.equal(work.getRange(2, C.due + 1).getNumberFormat(), 'yyyy-mm-dd');
     assert.equal(work.getRange(2, C.done + 1).getNumberFormat(), 'yyyy-mm-dd');
     assert.equal(work.getRange(2, C.updated + 1).getNumberFormat(), 'yyyy-mm-dd hh:mm:ss');
+    // Plain-text format on the free-text columns, so "007", "10/12" or "+9715…" are stored as typed (never parsed)
+    [C.title, C.details, C.source, C.link, C.note, C.project, C.sourceKey].forEach((c) => assert.equal(work.getRange(500, c + 1).getNumberFormat(), '@', 'Work text column ' + c));
+    [C.id, C.status, C.priority, C.newsletter, C.discuss].forEach((c) => assert.notEqual(work.getRange(2, c + 1).getNumberFormat(), '@', 'enum/checkbox column ' + c));
+    assert.equal(work.getRange(1, C.title + 1).getNumberFormat(), null, 'header row untouched');
     assert.equal(work.getRange(1, 1).getValue(), 'ID');
     assert.equal(work.metaGet_('backgrounds', 1, 1), '#21076C');
     assert.equal(work.metaGet_('fontWeights', 1, 1), 'bold');
@@ -295,6 +347,11 @@ module.exports = async function (t) {
     const CA = sb.eval('COLUMN.AGENDA');
     assert.deepEqual(agenda.getRange(2, CA.section + 1).getDataValidation().getCriteriaValues()[0], ['Done', 'In progress', 'Questions', 'Documents', 'Notes']);
     assert.equal(agenda.getRange(2, CA.weekOf + 1).getNumberFormat(), 'yyyy-mm-dd');
+    [CI.from, CI.subject, CI.snippet, CI.link, CI.sourceKey, CI.taskId].forEach((c) => assert.equal(inbox.getRange(2, c + 1).getNumberFormat(), '@', 'Inbox text column ' + c));
+    [CA.item, CA.detail, CA.link, CA.taskId].forEach((c) => assert.equal(agenda.getRange(2, c + 1).getNumberFormat(), '@', 'Agenda text column ' + c));
+    assert.notEqual(agenda.getRange(2, CA.order + 1).getNumberFormat(), '@', 'Order stays numeric');
+    assert.equal(ss.getSheetByName('Config').getRange(2, 2).getNumberFormat(), '@', 'Config Value');
+    assert.equal(ss.getSheetByName('Log').getRange(2, 4).getNumberFormat(), '@', 'Log Message');
     assert.equal(ss.getSheetByName('Log').getRange(2, 1).getNumberFormat(), 'yyyy-mm-dd hh:mm:ss');
     // Idempotent on a complete sheet
     const again = sb.gs.ensureSchema(ss);
@@ -307,12 +364,19 @@ module.exports = async function (t) {
     ss.deleteSheet(ss.getSheetByName('Log'));
     ss.getSheetByName('Agenda').getRange(1, 2).setValue('Sektion');
     sb.mock.seed('Work', [['W-keep', new Date(), 'Keep me']]);
+    const C = sb.eval('COLUMN.TASK');
+    assert.equal(ss.getSheetByName('Work').getRange(2, C.title + 1).getNumberFormat(), null, 'the live sheet pre-dates setup(): no text format yet');
     const result = sb.gs.ensureSchema(ss);
     assert.deepEqual(result.created, ['Log']);
     assert.equal(result.warnings.length, 1);
     assert.match(result.warnings[0], /^Agenda: header row differs/);
     assert.equal(sb.mock.rows('Work').length, 1, 'existing data untouched');
     assert.ok(ss.getSheetByName('Log'));
+    // Existing tabs get the plain-text format on their text columns too (idempotent), without any data write
+    [C.title, C.details, C.link, C.note, C.project, C.sourceKey].forEach((c) => assert.equal(ss.getSheetByName('Work').getRange(2, c + 1).getNumberFormat(), '@', 'existing Work column ' + c));
+    assert.equal(ss.getSheetByName('Inbox').getRange(2, 5).getNumberFormat(), '@', 'existing Inbox Subject');
+    assert.equal(sb.mock.rows('Work')[0][2], 'Keep me');
+    assert.deepEqual(sb.gs.ensureSchema(ss).created, []);
   });
 
   await t.test('getTab creates a missing tab on demand; openSpreadsheet honours SHEET_ID', (sb, assert) => {
@@ -393,6 +457,13 @@ module.exports = async function (t) {
     assert.ok(sb.mock.logRows().some((r) => r.level === 'WARN' && /TIMEZONE "Dubai"/.test(r.message)), 'bad zone logged');
     assert.equal(setTz('GST'), 'Asia/Dubai');
     assert.equal(setTz('Asia/Nowhere'), 'Asia/Dubai', 'unknown id rejected by the runtime');
+    // The mock, like Java, maps an unknown id to GMT instead of throwing: the code's own detection is what rejects it.
+    assert.equal(setTz('Asia/Dubay'), 'Asia/Dubai', 'a typo in an otherwise well-formed id must not silently become GMT');
+    assert.ok(require('./gas-mock').unknownZones.has('Asia/Dubay'), 'the mock formatted the typo in GMT rather than throwing');
+    assert.equal(sb.globals.Utilities.formatDate(new Date('2026-10-08T06:00:00Z'), 'Asia/Dubay', 'HH:mm Z'), '06:00 +0000', 'Java semantics: unknown zone → GMT');
+    assert.ok(sb.mock.logRows().some((r) => r.level === 'WARN' && /TIMEZONE "Asia\/Dubay"/.test(r.message)), 'typo logged');
+    assert.equal(setTz('Africa/Abidjan'), 'Africa/Abidjan', 'a real GMT zone is kept');
+    assert.equal(setTz('Europe/London'), 'Europe/London', '+0000 in winter only is not GMT');
     assert.equal(setTz('America/New_York'), 'America/New_York');
     assert.equal(setTz('America/Argentina/Buenos_Aires'), 'America/Argentina/Buenos_Aires');
     assert.equal(setTz('Etc/GMT+4'), 'Etc/GMT+4');

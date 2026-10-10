@@ -108,6 +108,16 @@ function selfTest() {
     r.added.forEach((t) => cleanup.push({ category: TABS.PERSONAL, id: t.id }));
     return 'added ' + r.added.length + ', skipped ' + r.skipped.length;
   });
+  // Number-, boolean- and date-looking text must come back as typed: the '@' format on the text
+  // columns (ensureSchema) is what stops Sheets parsing "007" into 7 or "10/12" into a date.
+  step('textRoundTrip', () => {
+    const r = addTask_({ category: TABS.PERSONAL, title: '007', details: marker, note: 'TRUE', project: '10/12', newsletter: false });
+    cleanup.push({ category: TABS.PERSONAL, id: r.task.id });
+    const back = findTask(TABS.PERSONAL, r.task.id);
+    const got = [back.title, back.note, back.project];
+    if (got.join('|') !== '007|TRUE|10/12') throw new Error('text cells were parsed on write: ' + JSON.stringify(got) + ' (run ensureSchema / setup again)');
+    return 'title, note and project read back as typed';
+  });
   step('gmail', () => {
     const threads = GmailApp.search('newer_than:1d', 0, 1);
     report.gmail = { ok: true, threads: threads.length };

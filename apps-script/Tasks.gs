@@ -175,6 +175,11 @@ function optionalBoolean_(value) {
  * The read, the dedupe, the id generation and the append all happen under one script lock:
  * two overlapping calls (a double-tapped Promote, the trigger and "Run capture now") must not
  * both pass the Source-key check and append the same key twice (SPEC 3: unique when present).
+ *
+ * A Source key is unique across BOTH tabs (SPEC 3; capture and the Claude routines check
+ * Work and Personal alike), so the key map holds the other tab's rows too and a known key
+ * returns the task that already carries it whichever list it lives in. Title similarity
+ * stays per tab.
  */
 function createTasks(category, specs, options) {
   guard();
@@ -189,7 +194,10 @@ function createTasksLocked_(tabName, specs, config) {
   const ids = new Set(existing.map((t) => t.id).filter(Boolean));
   const openTasks = existing.filter((t) => t.status === 'Open');
   const byKey = new Map();
-  existing.forEach((t) => { if (t.sourceKey) byKey.set(t.sourceKey, t); });
+  CATEGORIES.filter((c) => c !== tabName).forEach((other) => {
+    readTasks(other).forEach((t) => { if (t.sourceKey) byKey.set(t.sourceKey, t); });
+  });
+  existing.forEach((t) => { if (t.sourceKey) byKey.set(t.sourceKey, t); }); // this tab wins when both hold a key
   const today = todayDubai();
   const now = new Date();
   const added = [];
@@ -386,27 +394,50 @@ function updateTask_(input) {
   return { task: saveTask_(task) };
 }
 
+/**
+ * Appends a note segment ("existing · new"). A note that already ends with the same segment
+ * (a retried or replayed call, the editor sending the note it was seeded with) is left alone.
+ */
 function appendNote_(existing, note) {
   const n = collapseWhitespace(note);
   if (!n) return str(existing);
   const e = str(existing).trim();
+  if (e === n || e.endsWith(' · ' + n)) return e;
   return truncate(e ? e + ' · ' + n : n, NOTE_MAX);
 }
 
-/** completeTask: {category, id, note?} → {task}. */
+/**
+ * completeTask: {category, id, note?} → {task}. Status Done, Done = today (Dubai), Note
+ * appended if given. A task that is already Done keeps its Done date (as updateTask's
+ * status:Done path does), so a retried or stale call cannot move it into another agenda or
+ * newsletter window.
+ */
 function completeTask_(input) {
   const inp = input || {};
   const task = findTask(inp.category, inp.id);
+  if (task.status !== 'Done' || !task.done) task.done = todayDubai();
   task.status = 'Done';
-  task.done = todayDubai();
   task.note = appendNote_(task.note, inp.note);
   return { task: saveTask_(task) };
 }
 
-/** reopenTask: {category, id} → {task}. */
+const MOVED_NOTE_RE_ = /^Moved to ([WP]-[a-z0-9]{8})$/;
+
+/**
+ * reopenTask: {category, id} → {task}. Status Open, Done cleared. The Dropped original of a
+ * move ("Moved to <id>") is refused while its copy still exists in the other tab: reopening it
+ * would leave two live rows for one task, one of them without its Source key.
+ */
 function reopenTask_(input) {
   const inp = input || {};
   const task = findTask(inp.category, inp.id);
+  const moved = MOVED_NOTE_RE_.exec(str(task.note).trim());
+  if (moved && task.status === 'Dropped') {
+    const copyTab = moved[1].charAt(0) === 'P' ? TABS.PERSONAL : TABS.WORK;
+    if (copyTab !== task.category && readTasks(copyTab).some((t) => t.id === moved[1])) {
+      throw userError('This task was moved to ' + moved[1] + ' (' + copyTab + '); reopen it there');
+    }
+  }
   task.status = 'Open';
   task.done = '';
   return { task: saveTask_(task) };

@@ -23,6 +23,10 @@ function cleanText(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
 function normaliseTitleKey(s) {
   return String(s || '').toLowerCase().replace(/^(re|fwd?)\s*:\s*/i, '').replace(/[^\w\sÀ-￿]/g, ' ').replace(/\s+/g, ' ').trim();
 }
+/* Dedupe key for matching an import preview row to the task the server created from it: the server stores the title with
+   whitespace collapsed, the trailing "!" marks removed (previewRowsToText strips them) and cut to 140 characters, so both
+   sides are keyed on that form. */
+function importTitleKey(title) { return normaliseTitleKey(cleanText(title).replace(/\s*!+$/, '').slice(0, 140)); }
 function pad2(n) { return (n < 10 ? '0' : '') + n; }
 function parseYmd(s) {
   var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
@@ -165,7 +169,6 @@ function parseImportText(text, defaultCategory) {
     var raw = line.trim();
     if (!raw) return;
     if (raw.charAt(0) === '#') { project = cleanText(raw.replace(/^#+\s*/, '')); return; }
-    if (raw.length <= 2) return;
     var s = raw, category = category0, done = false, due = '', priority = 'Normal', m, changed = true;
     while (changed) {
       changed = false;
@@ -185,7 +188,7 @@ function parseImportText(text, defaultCategory) {
       if (m) { due = parseYmd(m[1]) ? m[1] : due; s = s.slice(0, m.index); changed = true; }
     }
     var title = cleanText(s);
-    if (!title) return;
+    if (title.length <= 2) return; // SPEC 6 "lines ≤ 2 chars are skipped", measured after the prefixes, marks and bullets are stripped, as the server (Import.gs) measures it
     rows.push({ include: true, category: category, title: title, project: project, done: done, due: due, priority: priority, link: '', source: 'text', raw: raw });
   });
   return rows;
@@ -548,7 +551,17 @@ function onTick(t, cb) {
   if (t.status === 'Open') { cb.checked = false; state.noteFor = t.id; state.expanded = null; renderToday(); focusIn('.note-box input'); }
   else reopenTaskUI(t, false);
 }
-function focusIn(sel) { var el = document.querySelector(sel); if (el) el.focus(); return !!el; }
+/* Focuses the first element matching `sel` and reports whether focus really moved there (false for a missing, disabled or
+   hidden control, e.g. a checkbox inside a collapsed "Done today" group), so callers can fall back to another target. */
+function focusIn(sel) { var el = document.querySelector(sel); if (!el) return false; el.focus(); return document.activeElement === el; }
+/* Re-renders the Today columns after a server reply and keeps keyboard focus on the task control that had it: the rebuild
+   replaces every row, so the focused checkbox or title button is looked up again by its row id. */
+function rerenderToday() {
+  var a = document.activeElement, row = a && a.closest ? a.closest('.task') : null;
+  var sel = row && a.classList.contains('task-check') ? '.task-check' : row && a.classList.contains('task-title') ? '.task-title' : '';
+  renderToday();
+  if (row && sel) focusTask(row.getAttribute('data-id'), sel);
+}
 function cssString(s) { return String(s === null || s === undefined ? '' : s).replace(/["\\]/g, '\\$&'); }
 /* Moves keyboard focus into a task row after renderToday() rebuilt the column (the focused element is gone by then). */
 function focusTask(id, sel) { return focusIn('.task[data-id="' + cssString(id) + '"] ' + sel); }
@@ -575,12 +588,16 @@ function completeTaskUI(t, note) {
   note = cleanText(note);
   state.noteFor = null;
   var prev = snapshot(t);
+  var nextId = neighbourTaskId(t.id); // the row leaves its group: the task after it is where a keyboard user continues
   t.status = 'Done'; t.done = state.today; if (note) t.note = t.note ? t.note + ' · ' + note : note; // same join as the server's appendNote_
   renderToday();
+  // Focus never drops to <body>: the ticked row's checkbox when Done today is open (Space there is the keyboard undo),
+  // otherwise the next task of its group, otherwise quick-add.
+  if (!focusTask(t.id, '.task-check') && !(nextId && focusTask(nextId, '.task-title'))) $('qa-title').focus();
   // Optimistic: the success toast shows at once but is withdrawn if the server rejects the write.
   var tt;
   var p = api('completeTask', cleanPayload({ category: t.category, id: t.id, note: note || undefined }));
-  p.then(function (r) { applyTask(r.task); renderToday(); }, function (e) { if (tt) tt.dismiss(); restore(t, prev); renderToday(); toastError(e); });
+  p.then(function (r) { applyTask(r.task); rerenderToday(); }, function (e) { if (tt) tt.dismiss(); restore(t, prev); rerenderToday(); toastError(e); });
   tt = toast('Done: ' + truncate(t.title, 48), { type: 'ok', timeout: 10000, action: { label: 'Undo', fn: function () {
     p.then(function () { reopenTaskUI(t, true); }, function () { /* already restored */ });
   } } });
@@ -589,9 +606,10 @@ function reopenTaskUI(t, fromUndo) {
   var prev = snapshot(t);
   t.status = 'Open'; t.done = '';
   renderToday();
+  if (!focusTask(t.id, '.task-check')) $('qa-title').focus(); // the row is back in an open group: keep the keyboard on it
   var tt;
   var p = api('reopenTask', { category: t.category, id: t.id });
-  p.then(function (r) { applyTask(r.task); renderToday(); }, function (e) { if (tt) tt.dismiss(); restore(t, prev); renderToday(); toastError(e); });
+  p.then(function (r) { applyTask(r.task); rerenderToday(); }, function (e) { if (tt) tt.dismiss(); restore(t, prev); rerenderToday(); toastError(e); });
   tt = toast('Reopened: ' + truncate(t.title, 48), fromUndo ? { type: 'ok' } : { type: 'ok', timeout: 10000, action: { label: 'Undo', fn: function () {
     p.then(function () { completeTaskUI(t, ''); }, function () { /* already restored */ });
   } } });
@@ -617,25 +635,41 @@ function editorEl(t) {
     h('button', { type: 'button', class: 'btn primary small', onclick: function () { saveEditor(t, d); } }, 'Save'),
     h('button', { type: 'button', class: 'btn small', onclick: function () { state.expanded = null; state.draft = null; renderToday(); focusTask(t.id, '.task-title'); } }, 'Cancel'),
     h('span', { class: 'spacer' }),
-    h('button', { type: 'button', class: 'btn small', onclick: function () { moveTaskUI(t, other); } }, 'Move to ' + other),
-    h('button', { type: 'button', class: 'btn small danger', onclick: function () { dropTaskUI(t, d.note); } }, 'Drop')
+    h('button', { type: 'button', class: 'btn small', onclick: function () { moveTaskUI(t, other, d); } }, 'Move to ' + other),
+    // Only a note Brandon changed in the editor goes with the drop: the server appends it to the existing note, so re-sending
+    // the note the editor was seeded with would duplicate it ("Sent 12 photos · Sent 12 photos").
+    h('button', { type: 'button', class: 'btn small danger', onclick: function () { dropTaskUI(t, cleanText(d.note) !== cleanText(t.note || '') ? d.note : ''); } }, 'Drop')
   ]);
   var meta = h('div', { class: 'muted small', text: 'Created ' + formatDateLabel(t.created, state.today) + ' · ' + (t.source || 'Manual') + ' · ' + t.id +
     (t.status === 'Done' ? ' · done ' + formatDateLabel(t.done, state.today) : '') });
   return h('div', { class: 'editor' }, [grid, actions, meta]);
 }
-function saveEditor(t, d) {
+/* The updateTask patch for an editor draft: only the fields that differ from the task. */
+function editorPatch(t, d) {
   var patch = {};
   ['details', 'project', 'due', 'priority', 'link', 'note'].forEach(function (k) { if (String(d[k] || '') !== String(t[k] || '')) patch[k] = d[k]; });
   ['newsletter', 'discuss'].forEach(function (k) { if (!!d[k] !== !!t[k]) patch[k] = !!d[k]; });
-  if (patch.link !== undefined && patch.link && !sanitiseLink(patch.link)) { toast('Links must start with http:// or https://', { type: 'error' }); return; }
+  return patch;
+}
+function badLink(patch) {
+  if (patch.link !== undefined && patch.link && !sanitiseLink(patch.link)) { toast('Links must start with http:// or https://', { type: 'error' }); return true; }
+  return false;
+}
+function saveEditor(t, d) {
+  var patch = editorPatch(t, d);
+  if (badLink(patch)) return;
   if (!Object.keys(patch).length) { state.expanded = null; state.draft = null; renderToday(); focusTask(t.id, '.task-title'); return; }
   api('updateTask', { category: t.category, id: t.id, patch: patch }).then(function (r) {
     applyTask(r.task); state.expanded = null; state.draft = null; renderToday(); focusTask(t.id, '.task-title'); toast('Saved: ' + truncate(t.title, 48), { type: 'ok' });
   }, toastError);
 }
-function moveTaskUI(t, toCategory) {
-  api('moveTask', { category: t.category, id: t.id, toCategory: toCategory }).then(function (r) {
+/* Move to the other list. Unsaved editor edits (draft `d`) are saved first, so they travel with the task instead of being
+   thrown away silently (the agenda page guards the same situation with its "Discard edits" toast). */
+function moveTaskUI(t, toCategory, d) {
+  var patch = d ? editorPatch(t, d) : {};
+  if (badLink(patch)) return;
+  var saved = Object.keys(patch).length ? api('updateTask', { category: t.category, id: t.id, patch: patch }).then(function (r) { applyTask(r.task); }) : Promise.resolve();
+  saved.then(function () { return api('moveTask', { category: t.category, id: t.id, toCategory: toCategory }); }).then(function (r) {
     removeTask(t.id); applyTask(r.task); state.expanded = null; state.draft = null; renderToday();
     if (!focusTask(r.task.id, '.task-title')) $('qa-title').focus(); // focus follows the task into its new column
     toast('Moved to ' + toCategory + ': ' + truncate(r.task.title, 40), { type: 'ok' });
@@ -746,9 +780,12 @@ function promoteForm(it) {
 }
 function ignoreInboxUI(it) {
   api('ignoreInbox', { inboxId: it.id }).then(function () {
+    var idx = state.inbox.items.indexOf(it), next = state.inbox.items[idx + 1] || state.inbox.items[idx - 1];
     state.inbox.items = state.inbox.items.filter(function (x) { return x.id !== it.id; });
     if (state.inbox.status === 'New') state.inboxNew = state.inbox.items.length;
     renderInbox(); toast('Ignored: ' + truncate(it.subject, 48), { type: 'ok' });
+    // The ignored item (and the focused Ignore button) is gone: continue on the next item's Promote button, else the filter.
+    if (!(next && focusIn('.item[data-id="' + cssString(next.id) + '"] .item-actions button'))) $('inbox-status').focus();
   }, toastError);
 }
 function runCapture() {
@@ -786,7 +823,8 @@ function previewRow(r) {
   if (r.due) extra.push('due ' + r.due);
   if (r.priority === 'High') extra.push('High');
   if (r.link) extra.push('link');
-  el.appendChild(h('input', { type: 'checkbox', checked: r.include, 'aria-label': 'Include', onchange: function () { r.include = this.checked; el.classList.toggle('skip', !r.include); renderImportCount(); } }));
+  // The 18 px checkbox sits inside a 40 x 40 label so a thumb can hit it (same pattern as the task checkbox).
+  el.appendChild(h('label', { class: 'pr-check-wrap' }, h('input', { type: 'checkbox', checked: r.include, 'aria-label': 'Include', onchange: function () { r.include = this.checked; el.classList.toggle('skip', !r.include); renderImportCount(); } })));
   el.appendChild(h('input', { type: 'text', class: 'input small pr-title', value: r.title, maxlength: 140, 'aria-label': 'Title', oninput: function () { r.title = this.value; renderImportCount(); } }));
   var sub = h('div', { class: 'pr-sub' }, [
     h('select', { class: 'input select small', 'aria-label': 'Category', value: r.category, onchange: function () { r.category = this.value; } }, CATEGORIES.map(function (c) { return h('option', { value: c, text: c }); })),
@@ -847,10 +885,10 @@ function runImport() {
 }
 function patchImportLinks(rows, added) {
   var byKey = Object.create(null); // titles are user text: "constructor" or "valueOf" must not hit Object.prototype
-  added.forEach(function (t) { byKey[normaliseTitleKey(t.title)] = t; });
+  added.forEach(function (t) { byKey[importTitleKey(t.title)] = t; });
   var todo = [];
   rows.forEach(function (r) {
-    var link = sanitiseLink(r.link), t = link ? byKey[normaliseTitleKey(r.title)] : null;
+    var link = sanitiseLink(r.link), t = link ? byKey[importTitleKey(r.title)] : null; // same 140-char form on both sides
     if (t && !t.link) todo.push({ task: t, link: link });
   });
   var count = 0;
@@ -1038,8 +1076,11 @@ function renderHistory() {
 }
 function reopenFromHistory(t) {
   api('reopenTask', { category: t.category, id: t.id }).then(function (r) {
+    var idx = state.history.tasks.indexOf(t), next = state.history.tasks[idx + 1] || state.history.tasks[idx - 1];
     state.history.tasks = state.history.tasks.filter(function (x) { return x.id !== t.id; });
     applyTask(r.task); renderHistory(); renderToday(); toast('Reopened: ' + truncate(t.title, 48), { type: 'ok' });
+    // The reopened item (and the focused Reopen button) left the list: continue on the next item's Reopen, else Apply.
+    if (!(next && focusIn('.item[data-id="' + cssString(next.id) + '"] .item-actions button'))) $('history-filters').querySelector('button[type="submit"]').focus();
   }, toastError);
 }
 

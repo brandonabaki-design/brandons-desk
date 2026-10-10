@@ -47,6 +47,11 @@ function formatDateTime(value) {
 /**
  * Parses yyyy-MM-dd (midnight in the local zone), yyyy-MM-dd HH:mm[:ss], ISO 8601
  * with offset, or a Date. Returns a Date or null.
+ *
+ * Anything else goes to Date.parse only when it carries an explicit four-digit year
+ * ("14 Oct 2026", "Thu, 08 Oct 2026 06:00:00 GMT"): V8's legacy parser otherwise accepts
+ * "Oct 14", "Tue 14 Oct" or "1" and silently resolves them to the year 2001, which healSheet
+ * would then write into the sheet as a real (overdue) date.
  */
 function parseDate(value) {
   if (isDateValue(value)) return isNaN(value.getTime()) ? null : value;
@@ -56,6 +61,7 @@ function parseDate(value) {
   if (!s) return null;
   const m = DATE_RE_.exec(s);
   if (!m) {
+    if (!/(^|\D)\d{4}(\D|$)/.test(s)) return null;
     const t = Date.parse(s);
     return isNaN(t) ? null : new Date(t);
   }

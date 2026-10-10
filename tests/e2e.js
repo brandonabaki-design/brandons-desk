@@ -20,6 +20,7 @@ const crypto = require('node:crypto');
 const { createSandbox } = require('./run');
 const { assemble, DEFAULT_OUT_DIR } = require('./ui/assemble');
 const { findUnsafe } = require('./fixtures/helpers');
+const { buildChatFixture } = require('./fixtures/chat-api');
 
 let playwright;
 try { playwright = require('playwright'); } catch (e) {
@@ -147,7 +148,7 @@ function seedSheet(sb) {
   ];
   const personal = [
     task({ id: 'P-e2e00013', category: 'Personal', title: 'Call the dentist to reschedule', due: TODAY, created: '2026-10-07', updated: '2026-10-07T09:00:00+04:00' }),
-    task({ id: 'P-e2e00014', category: 'Personal', title: 'Renew car registration', project: 'Home', due: '2026-10-04', priority: 'High', created: '2026-09-26', updated: '2026-09-26T09:00:00+04:00' }),
+    task({ id: 'P-e2e00014', category: 'Personal', title: 'Renew car registration', project: 'Home', due: '2026-10-04', priority: 'High', note: 'Plates expire end of month', created: '2026-09-26', updated: '2026-09-26T09:00:00+04:00' }),
     task({ id: 'P-e2e00015', category: 'Personal', title: 'Plan the weekend hike', priority: 'Low', created: '2026-09-30', updated: '2026-09-30T09:00:00+04:00' }),
     task({ id: 'P-e2e00016', category: 'Personal', title: 'Sort out gym membership', status: 'Done', done: TODAY, created: '2026-10-06', updated: TODAY + 'T08:05:00+04:00' })
   ];
@@ -251,6 +252,14 @@ async function waitToast(page, text) {
 }
 async function clearToasts(page) { await page.evaluate(() => document.querySelectorAll('.toast .x').forEach((b) => b.click())); }
 async function tabCount(page, name) { return (await page.textContent('[data-count="' + name + '"]')).trim(); }
+/** Where keyboard focus is: tag, id, text and the data-id of the enclosing .task or .item (if any). */
+function focusInfo(page) {
+  return page.evaluate(() => {
+    const a = document.activeElement;
+    const box = a && a.closest ? a.closest('.task, .item') : null;
+    return { tag: a ? a.tagName : '', id: a ? a.id : '', cls: a && a.className ? String(a.className) : '', text: a ? a.textContent.trim().slice(0, 30) : '', in: box ? box.getAttribute('data-id') : '' };
+  });
+}
 
 const IMPORT_TEXT = [
   '# AI Learning Hub',
@@ -374,8 +383,12 @@ async function runScenario(browser, url, vp, xlsxOk) {
     check(await dentist.locator('.note-box').count() === 1, tag + ': note box opens on tick');
     await dentist.locator('.note-box input').fill('Moved to Monday');
     await shot(page, tag + '-today-note');
-    await dentist.locator('.note-box button', { hasText: /^Done$/ }).click();
+    await dentist.locator('.note-box input').press('Enter'); // keyboard path: Enter in the note box completes the task
     check(await waitToast(page, 'Done: Call the dentist'), tag + ': done toast with Undo');
+    let fi = await focusInfo(page);
+    check(fi.id === 'qa-title', tag + ': completing the only task of its group (Done today collapsed) puts focus on quick-add, not <body> ' + JSON.stringify(fi));
+    const undoSize = await page.locator('.toast .act', { hasText: 'Undo' }).boundingBox();
+    check(!!undoSize && undoSize.height >= 40, tag + ': the Undo toast button is a 40 px tap target (' + (undoSize ? Math.round(undoSize.height) : '?') + ' px)');
     row = await until(() => { const t = S.find('Personal', 'Call the dentist to reschedule'); return t && t.status === 'Done' ? t : null; }, tag + ': completeTask set Status Done');
     if (row) check(row.done === TODAY && row.note === 'Moved to Monday', tag + ': Done = today (Dubai) and Note = the note ' + JSON.stringify([row.done, row.note]));
     check(await page.locator('#col-personal details.done-group .task', { hasText: 'Call the dentist' }).count() === 1, tag + ': ticked task shown under Done today');
@@ -384,6 +397,15 @@ async function runScenario(browser, url, vp, xlsxOk) {
     row = await until(() => { const t = S.find('Personal', 'Call the dentist to reschedule'); return t && t.status === 'Open' ? t : null; }, tag + ': reopenTask set Status Open');
     if (row) check(row.done === '', tag + ': Done cleared on reopen');
     check(await page.locator('#col-personal .group.due-today .task', { hasText: 'Call the dentist' }).count() === 1, tag + ': reopened task back under Due today');
+    await page.waitForTimeout(80);
+    fi = await focusInfo(page);
+    check(/task-check/.test(fi.cls) && fi.in === 'P-e2e00013', tag + ': Undo leaves focus on the reopened row\'s checkbox, also after the server reply re-rendered ' + JSON.stringify(fi));
+    // Space on that checkbox ticks it again; Escape closes the note box and focus stays on the checkbox
+    await page.keyboard.press('Space');
+    check(await dentist.locator('.note-box').count() === 1, tag + ': Space on the focused checkbox opens the note box');
+    await page.keyboard.press('Escape');
+    fi = await focusInfo(page);
+    check(await dentist.locator('.note-box').count() === 0 && /task-check/.test(fi.cls) && fi.in === 'P-e2e00013', tag + ': Escape cancels and keeps focus on the checkbox');
     await clearToasts(page);
 
     // ---- inline editor → updateTask patch ----
@@ -413,15 +435,20 @@ async function runScenario(browser, url, vp, xlsxOk) {
     check(patchCall && JSON.stringify(patchCall.payload.patch) === JSON.stringify({ project: 'Home', due: '2026-10-15', discuss: true }), tag + ': updateTask patch holds only changed fields');
     await clearToasts(page);
 
-    // ---- move to the other list → copy + Dropped original ----
+    // ---- move to the other list → copy + Dropped original (unsaved editor edits are saved first, not thrown away) ----
     await hike.locator('.task-title').click();
+    await hike.locator('.editor input[list="projects-list"]').fill('Trips');
+    const callsBeforeMove = calls.length;
     await hike.locator('.editor button', { hasText: 'Move to Work' }).click();
     check(await waitToast(page, 'Moved to Work: Plan the weekend hike'), tag + ': move toast');
+    const moveCalls = calls.slice(callsBeforeMove).map((c) => c.name);
+    check(JSON.stringify(moveCalls) === JSON.stringify(['updateTask', 'moveTask']) && JSON.stringify(calls[callsBeforeMove].payload.patch) === JSON.stringify({ project: 'Trips' }),
+      tag + ': Move with an unsaved edit saves the edit (updateTask {project}) before moveTask ' + JSON.stringify(moveCalls));
     const movedTo = await until(() => S.find('Work', 'Plan the weekend hike'), tag + ': moveTask copied the row to Work');
     const movedFrom = S.find('Personal', 'Plan the weekend hike');
     check(!!movedFrom && movedFrom.id === 'P-e2e00015', tag + ': the original Personal row still exists after the move');
-    if (movedTo && movedFrom) check(/^W-/.test(movedTo.id) && movedTo.due === '2026-10-15' && movedFrom.status === 'Dropped' && movedFrom.note === 'Moved to ' + movedTo.id,
-      tag + ': new W- id, fields kept, original Dropped with "Moved to <id>" ' + JSON.stringify([movedTo.id, movedFrom.status, movedFrom.note]));
+    if (movedTo && movedFrom) check(/^W-/.test(movedTo.id) && movedTo.due === '2026-10-15' && movedTo.project === 'Trips' && movedFrom.status === 'Dropped' && movedFrom.note === 'Moved to ' + movedTo.id,
+      tag + ': new W- id, fields (incl. the edited project) kept, original Dropped with "Moved to <id>" ' + JSON.stringify([movedTo.id, movedTo.project, movedFrom.status, movedFrom.note]));
     check(await page.locator('#col-work .task', { hasText: 'Plan the weekend hike' }).count() === 1 && await page.locator('#col-personal .task', { hasText: 'Plan the weekend hike' }).count() === 0, tag + ': moved task changed column');
     const focusedAfterMove = await page.evaluate(() => { const a = document.activeElement; return a && a.classList.contains('task-title') && a.closest('#col-work') ? a.textContent : ''; });
     check(focusedAfterMove === 'Plan the weekend hike', tag + ': focus follows the moved task into the Work column (' + JSON.stringify(focusedAfterMove) + ')');
@@ -433,10 +460,14 @@ async function runScenario(browser, url, vp, xlsxOk) {
     await page.keyboard.press('Escape');
     check(await car.locator('.editor').count() === 0 && (await focusedTaskId('.task-title')) === 'P-e2e00014', tag + ': Escape closes the editor and focuses the title');
     await car.locator('.task-title').click();
+    check((await car.locator('.editor input[type="text"][maxlength="200"]').inputValue()) === 'Plates expire end of month', tag + ': the editor shows the existing note');
     await car.locator('.editor button', { hasText: 'Drop' }).click();
     check(await waitToast(page, 'Dropped: Renew car registration'), tag + ': drop toast');
     check((await page.evaluate(() => document.activeElement && document.activeElement.id)) === 'qa-title', tag + ': dropping the only task of its group puts focus on quick-add, not <body>');
-    await until(() => { const t = S.find('Personal', 'Renew car registration'); return t && t.status === 'Dropped'; }, tag + ': dropTask set Status Dropped');
+    row = await until(() => { const t = S.find('Personal', 'Renew car registration'); return t && t.status === 'Dropped' ? t : null; }, tag + ': dropTask set Status Dropped');
+    const dropCall = calls.filter((c) => c.name === 'dropTask').slice(-1)[0];
+    check(row && row.note === 'Plates expire end of month' && dropCall && dropCall.payload.note === undefined,
+      tag + ': dropping a task with an existing note sends no note, so the sheet Note is unchanged ' + JSON.stringify([row && row.note, dropCall && dropCall.payload]));
     await page.locator('.toast .act', { hasText: 'Undo' }).click();
     check(await waitToast(page, 'Restored: Renew car registration'), tag + ': undo-drop toast');
     await until(() => { const t = S.find('Personal', 'Renew car registration'); return t && t.status === 'Open'; }, tag + ': undo reopened the dropped task');
@@ -485,6 +516,8 @@ async function runScenario(browser, url, vp, xlsxOk) {
     check(await waitToast(page, 'Ignored: Robotics kit inventory'), tag + ': ignore toast');
     await until(() => S.inbox().find((i) => i.id === 'I-e2e00004').status === 'Ignored', tag + ': ignoreInbox marked the row Ignored');
     check(await page.locator('#inbox-list .item').count() === 2, tag + ': ignored item leaves the list');
+    fi = await focusInfo(page);
+    check(fi.text === 'Promote' && fi.in === 'I-e2e00003', tag + ': Ignore moves focus to the next item\'s Promote button ' + JSON.stringify(fi));
     await clearToasts(page);
     await page.click('#inbox-capture');
     check(await waitToast(page, 'Captured 1 from Gmail and 0 from Chat (Chat mode: api)'), tag + ': capture toast with counts and chatMode');
@@ -493,6 +526,19 @@ async function runScenario(browser, url, vp, xlsxOk) {
     check(!!captured && captured.subject === 'Hub mentor schedule' && captured.link === 'https://mail.google.com/mail/u/bbaki@aisa.sch.ae/#all/thr-e2e-1' && captured.status === 'New',
       tag + ': runCaptureNow wrote the Gmail thread to Inbox (key = first message id, /u/<email>/#all/<threadId>)');
     check(await page.locator('#inbox-list .item', { hasText: 'Hub mentor schedule' }).count() === 1, tag + ': captured item listed');
+    check(await page.isHidden('#inbox-chatmode'), tag + ': no Chat-mode banner in api mode');
+    await clearToasts(page);
+    // Chat API answers 403 (SERVICE_DISABLED): the real server switches to the email fallback for this run and the UI says so.
+    sb.mock.urlFetch.handler = buildChatFixture({ now: NOW, mode: 'forbidden' }).handler;
+    await page.click('#inbox-capture');
+    check(await waitToast(page, 'Captured 0 from Gmail and 0 from Chat (Chat mode: email)'), tag + ': 403 from the Chat API is reported as email mode (nothing new to capture)');
+    await page.waitForSelector('#inbox-chatmode:not([hidden])');
+    const modeNote = await page.textContent('#inbox-chatmode');
+    check(/email mode/.test(modeNote) && /delayed/i.test(modeNote) && /partial/i.test(modeNote), tag + ': email mode labelled as delayed and partial: ' + JSON.stringify(modeNote));
+    check(sb.mock.logRows().some((r) => r.level === 'WARN' && /^CHAT_API_BLOCKED HTTP 403 PERMISSION_DENIED SERVICE_DISABLED/.test(r.message)), tag + ': CHAT_API_BLOCKED logged with the error status and reason');
+    check(sb.mock.gmail.searches.slice(-1)[0].query.indexOf('from:(chat-noreply@google.com') === 0, tag + ': the fallback searched Gmail for Chat reminder emails');
+    check(S.inbox().length === 5, tag + ': the Priya Nair thread was not mistaken for a Chat reminder email');
+    sb.mock.urlFetch.handler = () => ({ code: 200, body: {} });
     await clearToasts(page);
     await page.selectOption('#inbox-status', 'Promoted');
     await page.waitForFunction(() => document.querySelectorAll('#inbox-list .item .badge').length >= 1);
@@ -666,6 +712,8 @@ async function runScenario(browser, url, vp, xlsxOk) {
     await page.locator('#history-list .item', { hasText: 'Sort out gym membership' }).locator('button', { hasText: 'Reopen' }).click();
     check(await waitToast(page, 'Reopened: Sort out gym membership'), tag + ': history reopen toast');
     await until(() => { const t = S.find('Personal', 'Sort out gym membership'); return t && t.status === 'Open' && t.done === ''; }, tag + ': reopen from history cleared Done in the sheet');
+    fi = await focusInfo(page);
+    check(fi.text === 'Reopen' && !!fi.in && fi.in !== 'P-e2e00016', tag + ': Reopen moves focus to the next item\'s Reopen button ' + JSON.stringify(fi));
     await page.selectOption('#h-status', 'Dropped');
     await page.click('#history-filters button[type="submit"]');
     await page.waitForFunction(() => Array.from(document.querySelectorAll('#history-list .item')).some((e) => /Dropped/.test(e.textContent)));

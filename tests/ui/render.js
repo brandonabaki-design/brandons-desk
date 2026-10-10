@@ -120,6 +120,16 @@ async function waitToast(page, text) {
   catch (e) { return false; }
 }
 async function clearToasts(page) { await page.evaluate(() => document.querySelectorAll('.toast .x').forEach((b) => b.click())); }
+/** Elements matching `sel` whose rendered height (or width, when `both`) is under `min` px: [] means every one is a big enough tap target. */
+async function tooSmall(page, sel, min, both) {
+  return page.evaluate(([s, m, b]) => Array.from(document.querySelectorAll(s))
+    .map((el) => { const r = el.getBoundingClientRect(); return { h: Math.round(r.height), w: Math.round(r.width), text: (el.getAttribute('aria-label') || el.textContent).trim().slice(0, 24) }; })
+    .filter((x) => x.h > 0 && (x.h < m || (b && x.w < m))), [sel, min, !!both]);
+}
+/** data-id of the task row that holds the focused element when it matches `sel`, else ''. */
+function focusedTaskId(page, sel) {
+  return page.evaluate((s) => { const a = document.activeElement; return a && a.matches(s) && a.closest('.task') ? a.closest('.task').getAttribute('data-id') : ''; }, sel);
+}
 
 async function runViewport(browser, url, vp, opts) {
   const tag = vp.name;
@@ -184,11 +194,18 @@ async function runViewport(browser, url, vp, opts) {
       .map((el) => ({ h: Math.round(el.getBoundingClientRect().height), text: (el.getAttribute('aria-label') || el.textContent).trim().slice(0, 24) }))
       .filter((x) => x.h > 0 && x.h < 40));
     check(shortTargets.length === 0, tag + ': every small button and the Done today toggle is at least 40 px tall' + (shortTargets.length ? ' ' + JSON.stringify(shortTargets) : ''));
+    const segShort = await tooSmall(page, '.seg-btn, #tabs a', 40);
+    check(segShort.length === 0, tag + ': the quick-add Work/Personal toggle and the tab links are at least 40 px tall' + (segShort.length ? ' ' + JSON.stringify(segShort) : ''));
+    const titleShort = await tooSmall(page, '.task-title', 32);
+    check(titleShort.length === 0, tag + ': every task title button is at least 32 px tall to tap' + (titleShort.length ? ' ' + JSON.stringify(titleShort) : ''));
     await shot(page, tag + '-today-note');
     await dentist.locator('.note-box input').fill('Moved to Monday');
     await dentist.locator('.note-box button', { hasText: /^Done$/ }).click();
     check(await page.locator('#col-personal details.done-group .task', { hasText: 'Call the dentist' }).count() === 1, tag + ': ticked task moves to Done today (optimistic)');
     check(await waitToast(page, 'Done: Call the dentist'), tag + ': done toast with undo');
+    const actShort = await tooSmall(page, '.toast .act', 40);
+    check(actShort.length === 0, tag + ': the Undo toast button is at least 40 px tall' + (actShort.length ? ' ' + JSON.stringify(actShort) : ''));
+    check((await page.evaluate(() => document.activeElement && document.activeElement.tagName)) !== 'BODY', tag + ': completing a task does not drop focus to <body>');
     await shot(page, tag + '-today-undo-toast');
     await page.waitForTimeout(120);
     let m = await page.evaluate(() => window.__mock.state.tasks.filter((t) => t.title === 'Call the dentist to reschedule')[0]);
@@ -199,11 +216,22 @@ async function runViewport(browser, url, vp, opts) {
     await page.waitForTimeout(120);
     m = await page.evaluate(() => window.__mock.state.tasks.filter((t) => t.title === 'Call the dentist to reschedule')[0]);
     check(m.status === 'Open' && m.done === '', tag + ': reopenTask reached the server');
+    check((await focusedTaskId(page, '.task-check')) === 'P-fx2abcde', tag + ': Undo puts keyboard focus on the reopened row\'s checkbox (after the server reply too)');
     await clearToasts(page);
     const gym = page.locator('#col-personal details.done-group .task', { hasText: 'Sort out gym membership' });
     await page.locator('#col-personal details.done-group summary').click();
     await gym.locator('.task-check').click();
     check(await page.locator('#col-personal .group.open .task', { hasText: 'Sort out gym membership' }).count() === 1, tag + ': unticking a done task reopens it');
+    await page.waitForTimeout(120);
+    check((await focusedTaskId(page, '.task-check')) === 'P-fx7abcde', tag + ': unticking keeps focus on that row\'s checkbox in its new group');
+    // Ticking again while Done today is open: focus stays on the row's checkbox there (Space is the keyboard undo)
+    await page.locator('#col-personal .group.open .task', { hasText: 'Sort out gym membership' }).locator('.task-check').click();
+    await page.locator('.note-box button', { hasText: 'Done, no note' }).click();
+    await page.waitForTimeout(120);
+    check((await focusedTaskId(page, '.task-check')) === 'P-fx7abcde' && await page.locator('#col-personal details.done-group[open] .task', { hasText: 'Sort out gym membership' }).count() === 1,
+      tag + ': completing with Done today open focuses the ticked row\'s checkbox');
+    await page.keyboard.press('Space');
+    check(await waitToast(page, 'Reopened: Sort out gym membership'), tag + ': Space on that checkbox is the keyboard undo');
     await clearToasts(page);
     // A rejected completeTask withdraws the optimistic "Done:" toast (and its dead Undo) and rolls the row back.
     await page.evaluate(() => window.__mock.failNext('completeTask', 'Sheet is locked, try again'));
@@ -280,6 +308,8 @@ async function runViewport(browser, url, vp, opts) {
     await page.locator('#inbox-list .item', { hasText: 'Newsletter deadline Friday' }).locator('button', { hasText: 'Ignore' }).click();
     check(await waitToast(page, 'Ignored: Newsletter deadline Friday'), tag + ': ignore toast');
     check(await page.locator('#inbox-list .item').count() === 4, tag + ': ignored item leaves the list');
+    const afterIgnore = await page.evaluate(() => { const a = document.activeElement; return { text: a ? a.textContent.trim() : '', item: a && a.closest('.item') ? a.closest('.item').textContent : '', id: a ? a.id : '' }; });
+    check(afterIgnore.text === 'Promote' && /Direct message|Question about the AI club/.test(afterIgnore.item), tag + ': Ignore moves focus to the next item\'s Promote button ' + JSON.stringify([afterIgnore.text, afterIgnore.id]));
     await clearToasts(page);
     await page.click('#inbox-capture');
     check(await waitToast(page, 'Captured 1 from Gmail and 0 from Chat (Chat mode: api)'), tag + ': capture toast with counts and chatMode');
@@ -322,6 +352,8 @@ async function runViewport(browser, url, vp, opts) {
     await page.locator('.prow').nth(2).locator('.pr-title').fill('Buy new running shoes');
     await page.locator('.prow').nth(6).locator('select').selectOption('Work');
     check((await page.textContent('#import-preview-count')).trim() === '(9 of 10 selected)', tag + ': preview count after edits');
+    const checkShort = await tooSmall(page, '.prow .pr-check-wrap', 40, true);
+    check(checkShort.length === 0 && await page.locator('.prow .pr-check-wrap input[type="checkbox"]').count() === 10, tag + ': every Include checkbox sits in a 40 x 40 label' + (checkShort.length ? ' ' + JSON.stringify(checkShort) : ''));
     await noOverflow(page, tag + ' import preview');
     await shot(page, tag + '-import-preview');
     await page.click('#import-go');
@@ -387,7 +419,7 @@ async function runViewport(browser, url, vp, opts) {
     check(await page.locator('#nl-list .item').count() >= 5, tag + ': newsletter lists items');
     await page.click('#nl-copy');
     check(await waitToast(page, 'Newsletter copied as Markdown'), tag + ': newsletter copy toast');
-    check(/^# AI Learning Hub newsletter/.test(await page.evaluate(() => window.__copied || '')), tag + ': copied markdown from the server');
+    check(/^# AI Learning Hub — newsletter notes\n/.test(await page.evaluate(() => window.__copied || '')), tag + ': copied markdown from the server (Newsletter.gs heading)');
     await clearToasts(page);
     await downloadCheck(page, '#nl-download', 'newsletter-2026-10-10', opts.xlsx, tag, 'Newsletter', (ws) => ws.A3 && ws.A3.v === 'Project');
     await page.fill('#nl-from', '2026-10-01');
@@ -402,6 +434,8 @@ async function runViewport(browser, url, vp, opts) {
     await page.locator('#history-list .item', { hasText: 'Return library books' }).locator('button', { hasText: 'Reopen' }).click();
     check(await waitToast(page, 'Reopened: Return library books'), tag + ': history reopen toast');
     check(await page.locator('#history-list .item', { hasText: 'Return library books' }).count() === 0, tag + ': reopened task leaves history');
+    const afterReopen = await page.evaluate(() => { const a = document.activeElement; return { text: a ? a.textContent.trim() : '', inList: !!(a && a.closest('#history-list')), submit: !!(a && a.closest('#history-filters') && a.type === 'submit') }; });
+    check((afterReopen.text === 'Reopen' && afterReopen.inList) || afterReopen.submit, tag + ': Reopen moves focus to the next item\'s Reopen button (else Apply) ' + JSON.stringify(afterReopen));
     await page.selectOption('#h-status', 'Dropped');
     await page.fill('#h-from', '');
     await page.click('#history-filters button[type="submit"]');

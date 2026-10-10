@@ -111,7 +111,7 @@ module.exports = async function (t) {
   await t.test('importText defaults, created validation and blank text', (sb, assert) => {
     assert.deepEqual(sb.gs.importText_({ category: 'Personal', text: '   \n\n' }), { added: [], skipped: [] });
     const r = sb.gs.importText_({ category: 'Personal', text: 'Single line task' });
-    assert.equal(r.added[0].created, sb.gs.todayDubai());
+    assert.equal(r.added[0].created, '2026-10-08', 'Created defaults to today (fixed clock)');
     assert.equal(r.added[0].category, 'Personal');
     assert.throws(() => sb.gs.importText_({ category: 'Personal', text: 'x y z', created: 'soon' }), /Created must be/);
     assert.throws(() => sb.gs.importText_({ text: 'x y z' }), /Category must be/);
@@ -120,7 +120,7 @@ module.exports = async function (t) {
     assert.equal(dup.added.length, 1);
     assert.equal(dup.skipped.length, 1);
     assert.equal(dup.skipped[0].reason, 'duplicate');
-  });
+  }, { now: NOW });
 
   await t.test('importHtml: Claude-in-Chrome-style sample with headings, checkboxes, classes and links', (sb, assert) => {
     const html = fixture('import-sample.html');

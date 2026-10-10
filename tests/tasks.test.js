@@ -116,7 +116,7 @@ module.exports = async function (t) {
     assert.equal(u.status, 'Open');
     const done = sb.gs.updateTask_({ category: 'Work', id: task.id, patch: { status: 'Done' } }).task;
     assert.equal(done.status, 'Done');
-    assert.equal(done.done, sb.gs.todayDubai());
+    assert.equal(done.done, '2026-10-08', 'Done = today (fixed clock)');
     const stillDone = sb.gs.updateTask_({ category: 'Work', id: task.id, patch: { status: 'Done', note: 'again' } }).task;
     assert.equal(stillDone.done, done.done, 'Done date kept when already set');
     const reopened = sb.gs.updateTask_({ category: 'Work', id: task.id, patch: { status: 'Open' } }).task;
@@ -131,7 +131,89 @@ module.exports = async function (t) {
     assert.throws(() => sb.gs.updateTask_({ category: 'Work', id: 'W-nope', patch: {} }), /Task not found/);
     assert.throws(() => sb.gs.updateTask_({ category: 'Work', patch: {} }), /Task id required/);
     assert.equal(sb.mock.rows('Work').length, 1, 'updates write in place');
-  });
+  }, { now: NOW });
+
+  await t.test('completeTask on a task that is already Done keeps its Done date and never duplicates the note', (sb, assert) => {
+    const task = sb.gs.addTask_({ category: 'Work', title: 'Closed last week', status: 'Done', done: '2026-10-01', note: 'first' }).task;
+    const replay = sb.gs.completeTask_({ category: 'Work', id: task.id, note: 'first' }).task;
+    assert.equal(replay.done, '2026-10-01', 'Done date kept (same rule as updateTask status:Done)');
+    assert.equal(replay.note, 'first', 'a note equal to the existing one is not appended again');
+    const more = sb.gs.completeTask_({ category: 'Work', id: task.id, note: 'second' }).task;
+    assert.equal(more.done, '2026-10-01');
+    assert.equal(more.note, 'first · second');
+    const retried = sb.gs.completeTask_({ category: 'Work', id: task.id, note: ' second ' }).task;
+    assert.equal(retried.note, 'first · second', 'a retried call with the trailing segment is a no-op');
+    assert.equal(sb.gs.completeTask_({ category: 'Work', id: task.id }).task.note, 'first · second');
+    // Reopened, then completed again: a fresh Done date
+    sb.gs.reopenTask_({ category: 'Work', id: task.id });
+    const again = sb.gs.completeTask_({ category: 'Work', id: task.id, note: 'third' }).task;
+    assert.equal(again.done, '2026-10-08');
+    assert.equal(again.note, 'first · second · third');
+    // The Done date is also kept when a stale client completes a task ticked from the sheet (Status Done, Done set)
+    const C = sb.eval('COLUMN.TASK');
+    sb.mock.seed('Work', [['W-sheet01', '2026-09-20', 'Ticked in the sheet', '', 'Manual', '', 'Done', '2026-09-30', '', '', false, false, '', 'Normal', '', '2026-09-30 10:00']]);
+    assert.equal(sb.gs.completeTask_({ category: 'Work', id: 'W-sheet01' }).task.done, '2026-09-30');
+    assert.equal(sb.gs.formatDate(sb.mock.rows('Work')[1][C.done]), '2026-09-30');
+  }, { now: NOW });
+
+  await t.test('reopenTask refuses the Dropped original of a move while its copy exists in the other tab', (sb, assert) => {
+    const task = sb.gs.addTask_({ category: 'Work', title: 'Buy a gift', sourceKey: 'gmail:g1' }).task;
+    const moved = sb.gs.moveTask_({ category: 'Work', id: task.id, toCategory: 'Personal' }).task;
+    assert.throws(() => sb.gs.reopenTask_({ category: 'Work', id: task.id }), new RegExp('This task was moved to ' + moved.id + ' \\(Personal\\); reopen it there'));
+    const live = sb.gs.readTasks('Work').concat(sb.gs.readTasks('Personal')).filter((x) => x.status === 'Open');
+    assert.deepEqual(live.map((x) => x.id), [moved.id], 'still exactly one live row');
+    assert.equal(sb.gs.findTask('Work', task.id).status, 'Dropped');
+    // The copy itself can be reopened after being dropped; an ordinary Dropped task too
+    sb.gs.dropTask_({ category: 'Personal', id: moved.id, note: 'later' });
+    assert.equal(sb.gs.reopenTask_({ category: 'Personal', id: moved.id }).task.status, 'Open');
+    const plain = sb.gs.addTask_({ category: 'Work', title: 'Plain drop' }).task;
+    sb.gs.dropTask_({ category: 'Work', id: plain.id, note: 'Moved to the shed' });
+    assert.equal(sb.gs.reopenTask_({ category: 'Work', id: plain.id }).task.status, 'Open', 'a note that merely starts with "Moved to" is not a move');
+    // Once the copy is gone (row deleted by hand), the original may be reopened again
+    sb.gs.deleteRowNumber('Personal', sb.gs.findTask('Personal', moved.id).row);
+    assert.equal(sb.gs.reopenTask_({ category: 'Work', id: task.id }).task.status, 'Open');
+  }, { now: NOW });
+
+  await t.test('a Source key is unique across Work and Personal: createTasks dedupes against the other tab too', (sb, assert) => {
+    const work = sb.gs.addTask_({ category: 'Work', title: 'Reply to the vendor', sourceKey: 'gmail:x1' }).task;
+    const personal = sb.gs.addTask_({ category: 'Personal', title: 'Completely different wording', sourceKey: 'gmail:x1' });
+    assert.equal(personal.duplicate, true, 'the key already lives in Work');
+    assert.equal(personal.task.id, work.id);
+    assert.equal(personal.task.category, 'Work');
+    assert.equal(sb.mock.rows('Personal').length, 0);
+    // Title similarity stays per tab
+    assert.equal(sb.gs.addTask_({ category: 'Personal', title: 'Reply to the vendor' }).duplicate, false);
+    // Import keys too: the same line on the same date into both lists is one task
+    const first = sb.gs.importText_({ category: 'Work', text: '[W] Send the forms back', created: '2026-10-08' });
+    const second = sb.gs.importText_({ category: 'Personal', text: '[P] Send the forms back', created: '2026-10-08' });
+    assert.equal(first.added.length, 1);
+    assert.deepEqual(second.skipped.map((s) => s.reason), ['duplicate']);
+    assert.equal(sb.gs.readTasks('Work').concat(sb.gs.readTasks('Personal')).filter((x) => x.sourceKey === first.added[0].sourceKey).length, 1);
+  }, { now: NOW });
+
+  await t.test('text that looks like a number, boolean or date is stored as typed: the plain-text format on the text columns', (sb, assert) => {
+    const C = sb.eval('COLUMN.TASK');
+    sb.mock.coerceStrings = true; // the mock now parses typed-looking strings the way Sheets does (unless the cell format is '@')
+    const raw = sb.gs.addTask_({ category: 'Work', title: '007', note: 'TRUE', project: '10/12', details: '+971501234567' }).task;
+    const parsed = sb.gs.findTask('Work', raw.id);
+    assert.deepEqual([parsed.title, parsed.note, parsed.details], ['7', 'true', '971501234567'], 'without the format the cells are parsed on write (as in Sheets)');
+    assert.match(parsed.project, /^2026-10-12T00:00:00\+04:00$/, '"10/12" became a Date');
+    sb.gs.ensureSchema(); // '@' on the text columns of the existing tabs (setup / selfTest run this)
+    const typed = sb.gs.addTask_({ category: 'Personal', title: '007', note: 'TRUE', project: '10/12', details: '+971501234567' }).task;
+    const back = sb.gs.findTask('Personal', typed.id);
+    assert.deepEqual([back.title, back.note, back.project, back.details], ['007', 'TRUE', '10/12', '+971501234567']);
+    assert.deepEqual([typeof sb.mock.rows('Personal')[0][C.title], typeof sb.mock.rows('Personal')[0][C.project]], ['string', 'string']);
+    assert.equal(sb.gs.completeTask_({ category: 'Personal', id: typed.id, note: '3.50' }).task.note, 'TRUE · 3.50');
+    // Inbox subject/snippet, Agenda item/detail and Log message are text columns too
+    sb.gs.appendRows('Inbox', [['I-txt', new Date(), 'Chat', '1-2', '10/12', '3.50', '', 'chat:txt', 'New', '', 'Work']]);
+    const item = sb.gs.listInbox_({}).items[0];
+    assert.deepEqual([item.from, item.subject, item.snippet], ['1-2', '10/12', '3.50']);
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Notes: [{ item: '007', detail: '1-2' }] } });
+    assert.deepEqual(sb.gs.getAgenda_({ meetingDate: '2026-10-13' }).sections.Notes.map((r) => [r.item, r.detail]), [['007', '1-2']]);
+    sb.gs.log('unit', 'INFO', '007');
+    assert.equal(sb.gs.getLog({}).rows.find((r) => r.fn === 'unit').message, '007');
+    sb.mock.coerceStrings = false;
+  }, { now: NOW });
 
   await t.test('completeTask / reopenTask / dropTask', (sb, assert) => {
     const task = sb.gs.addTask_({ category: 'Personal', title: 'Renew the car registration', note: 'at the RTA' }).task;

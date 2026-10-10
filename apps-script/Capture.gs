@@ -169,13 +169,22 @@ function runCapture_() {
   }
 
   let dropped = 0;
+  let trimmed = 0;
   if (items.length) {
     // Gmail/Chat fetching stayed outside the lock; the key check and the append share one lock
     // acquisition so an overlapping run (06:15 trigger + "Run capture now") cannot write the
-    // same Source key twice.
+    // same Source key twice, nor the same Chat messages under another key (chatReconcileRow:
+    // a Chat row carries only its newest message's key).
     withLock(() => {
       const keysNow = existingSourceKeys();
-      const fresh = items.filter((item) => !keysNow.has(item.sourceKey));
+      const fresh = [];
+      items.forEach((item) => {
+        if (keysNow.has(item.sourceKey)) return;
+        const kept = item.conversation ? chatReconcileRow(item, keysNow, existingKeys) : item;
+        if (!kept) return;
+        if (kept !== item) trimmed++;
+        fresh.push(kept);
+      });
       dropped = items.length - fresh.length;
       items = fresh;
       if (!items.length) return;
@@ -196,6 +205,7 @@ function runCapture_() {
     'gmail ' + result.gmail + ', chat ' + result.chat + ' (mode ' + result.chatMode + ')' +
     (result.chat ? ', ' + result.chatMessages + ' chat message(s)' : '') +
     (dropped ? '; ' + dropped + ' row(s) already captured by an overlapping run' : '') +
+    (trimmed ? '; ' + trimmed + ' Chat row(s) cut to the messages an overlapping run had not captured' : '') +
     (result.errors.length ? '; errors: ' + result.errors.join(' | ') : ''));
   return result;
 }

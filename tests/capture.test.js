@@ -1,6 +1,6 @@
 'use strict';
 const { fixture, fixtureJson, findUnsafe } = require('./fixtures/helpers');
-const { buildChatFixture, buildChatServer, buildLiveReplay, ME } = require('./fixtures/chat-api');
+const { buildChatFixture, buildChatServer, buildLiveReplay, deleteMessage, ME } = require('./fixtures/chat-api');
 
 const WEEKDAY_NOW = '2026-10-08T02:15:00Z'; // Thursday 06:15 Dubai
 const WEEKEND_NOW = '2026-10-10T02:15:00Z'; // Saturday 06:15 Dubai
@@ -72,6 +72,39 @@ function useChatServer(sb, server) {
 function chatRows(sb) {
   return sb.gs.readRows('Inbox').filter((r) => r.source === 'Chat');
 }
+/**
+ * Two capture runs that overlap (the 06:15 trigger + "Run capture now"): the inner run starts while
+ * the outer one is reading the space's messages. innerFirst = the inner run reads messages 1..2 and
+ * message 3 arrives before the outer read (the outer row holds 1..3); otherwise message 3 arrives
+ * first, the inner run reads 1..3 and the outer read still returns 1..2.
+ */
+function overlappingRuns(sb, innerFirst) {
+  const S = 'spaces/DMLAP';
+  const third = chatMsg(S, '3.3', SARA, 0.1, 'Also please count the spare servos');
+  const server = buildChatServer({ spaces: [dmSpace('DMLAP')], messages: { [S]: [
+    chatMsg(S, '1.1', SARA, 5, 'Please check the robotics kits today'),
+    chatMsg(S, '2.2', SARA, 4, 'The order form is on the shared drive')
+  ] } });
+  useChatServer(sb, server);
+  let nested = false;
+  let inner = null;
+  sb.mock.urlFetch.handler = (url, params) => {
+    if (nested || !/\/messages\?/.test(url)) return server.handler(url, params);
+    nested = true;
+    if (innerFirst) {
+      inner = sb.gs.runCaptureNow_();
+      server.messages[S].push(third);
+      return server.handler(url, params);
+    }
+    const res = server.handler(url, params);
+    server.messages[S].push(third);
+    inner = sb.gs.runCaptureNow_();
+    return res;
+  };
+  const outer = sb.gs.runCaptureNow_();
+  return { S: S, inner: inner, outer: outer };
+}
+
 /** An Inbox row the first live run (one row per message) would have written for `message`. */
 function perMessageRow(id, message, status) {
   return [id, new Date('2026-10-07T03:00:00Z'), 'Chat', message.sender.displayName, 'Direct message', message.text || '',
@@ -277,17 +310,31 @@ module.exports = async function (t) {
     // Acknowledgements, whatever the case, punctuation, emoji or diacritics.
     ['OK', 'Thanks!! 🙏', 'thank you.', 'Got it 👍', 'شكراً', 'شكرا!', 'تمام', 'Take care', '  Will do  ', 'Ok?', 'Yes!!!', 'لا'].forEach((text) =>
       assert.equal(sb.gs.chatTextSubstantive(text), false, 'acknowledgement: ' + text));
-    // Never substantive: empty, emoji-only, numbers-only, phone-number-like.
-    [null, undefined, '', '   ', '👍👍', '😂😂😂', '216', '12345678901234', '+971 50 126 0445', '(050) 648-0801', 'My number is +971 50 126 0445',
-      'Sure - 0501260445'].forEach((text) => assert.equal(sb.gs.chatTextSubstantive(text), false, 'never: ' + JSON.stringify(text)));
-    // Short pleasantries: under 12 letters/digits once acknowledgements and interjections are peeled off the ends.
-    ['I saw it.', 'Aww poor thing', 'Oh shoot! Take care', 'thanks a lot', 'ok ok ok ok ok', 'Hi Brandon'].forEach((text) =>
+    // Never substantive: empty, emoji-only, numbers-only, phone-number-like (ASCII or Arabic-Indic
+    // digits), or a phone number with only an acknowledgement or a short word around it.
+    [null, undefined, '', '   ', '👍👍', '😂😂😂', '216', '12345678901234', '+971 50 126 0445', '(050) 648-0801',
+      'Sure - 0501260445', 'Ok 050 126 0445', '٠٥٠١٢٦٠٤٤٥', 'تفضل ٠٥٠١٢٦٠٤٤٥', 'رقمي ٠٥٠١٢٦٠٤٤٥', 'Mobile: 050-648-0801'].forEach((text) =>
+      assert.equal(sb.gs.chatTextSubstantive(text), false, 'never: ' + JSON.stringify(text)));
+    // Short pleasantries: under 12 characters once interjections are peeled off the start and
+    // acknowledgements (and longer thank-yous) off the end.
+    ['I saw it.', 'Aww poor thing', 'Oh shoot! Take care', 'thanks a lot', 'Thank you so much!', 'ok ok ok ok ok', 'Hi Brandon',
+      'All good, thanks', 'Wow ok'].forEach((text) =>
       assert.equal(sb.gs.chatTextSubstantive(text), false, 'short: ' + text));
-    // Kept: a question (Latin or Arabic mark), a URL, or 12+ letters/digits.
+    // Kept: a question (Latin or Arabic mark), a URL, or 12+ characters.
     ['Why?', 'Room 216?', 'هل يمكنك الحضور؟', 'https://docs.google.com/document/d/abc', 'thanks https://drive.google.com/x',
       'Please send the rubric', 'Call me on 050 126 0445 about the trip tomorrow', 'Good morning! The bus is late today',
       'Can you share the AI workshop slides before Thursday?'].forEach((text) =>
       assert.equal(sb.gs.chatTextSubstantive(text), true, 'kept: ' + text));
+    // Kept: short requests and information that rule 3 (12 characters, spaces included) keeps. Times,
+    // rooms and dates count (a date is not a phone number), a leading acknowledgement is not peeled
+    // ("Ok see you in room 216"), only a trailing one ("Is the report done" counts as "is the report").
+    ['Ok see you in room 216', 'Meet at 2:30', 'Come at 2:30', 'Meeting at 3', 'meet me at 3pm', 'Bring laptop', 'Room 216 now',
+      'Thanks, see you at 3', 'Call Huda now', 'Need the keys', 'Running late', "I'm sick today", 'Is the report done',
+      'Put your name on it', 'Due 2026-10-12', 'Deadline 12/10/2026', 'Exam on 12.10.2026', 'Grades 9 10 11 12 only'].forEach((text) =>
+      assert.equal(sb.gs.chatTextSubstantive(text), true, 'short but kept: ' + text));
+    // A phone number inside a sentence of 12+ characters: the sentence counts on its own.
+    ['Please call me on 0501260445', 'My number is +971 50 126 0445'].forEach((text) =>
+      assert.equal(sb.gs.chatTextSubstantive(text), true, 'number in a sentence: ' + text));
   });
 
   await t.test('Chat: 8 messages in one DM become ONE Inbox row (From, Subject, Snippet oldest first, key = newest message)', (sb, assert) => {
@@ -416,6 +463,83 @@ module.exports = async function (t) {
     const row = sb.gs.readRows('Inbox').slice(-1)[0];
     assert.equal(row.snippet, 'Omar: Can you send me the tutorial timetable for the IB group?');
     assert.equal(row.sourceKey, 'chat:spaces/DMOMAR/messages/new1.new1');
+  }, { now: WEEKDAY_NOW });
+
+  await t.test('Chat: deleting the newest captured message does not bring the older ones back (showDeleted=true)', (sb, assert) => {
+    const S = 'spaces/DMDEL';
+    const server = buildChatServer({ spaces: [dmSpace('DMDEL')], messages: { [S]: [
+      chatMsg(S, 'a.a', OMAR, 10, 'Can you cover my Grade 8 class on Thursday?'),
+      chatMsg(S, 'b.b', OMAR, 9, 'The lesson plan is in the shared folder')
+    ] } });
+    useChatServer(sb, server);
+    assert.deepEqual(sb.gs.runCaptureNow_(), { gmail: 0, chat: 1, chatMessages: 2, chatMode: 'api', errors: [] });
+    assert.equal(chatRows(sb)[0].sourceKey, 'chat:' + S + '/messages/b.b');
+    // Omar deletes the newest captured message: messages.list only lists it with showDeleted=true,
+    // as a tombstone that keeps its name and createTime.
+    deleteMessage(server.messages[S][1], hoursBefore(5));
+    assert.deepEqual(sb.gs.runCaptureNow_(), { gmail: 0, chat: 0, chatMessages: 0, chatMode: 'api', errors: [] },
+      'the older message is not captured again');
+    assert.equal(chatRows(sb).length, 1);
+    const msgCalls = server.state.calls.filter((c) => /\/messages\?/.test(c.url));
+    assert.ok(msgCalls.length >= 2);
+    msgCalls.forEach((c) => assert.match(c.url, /[?&]showDeleted=true(&|$)/, 'deleted messages are requested: ' + c.url));
+    // A message deleted before any run saw it is never shown; the message after it is.
+    server.messages[S].push(
+      deleteMessage(chatMsg(S, 'c.c', OMAR, 3, 'Sorry wrong chat, please ignore this one'), hoursBefore(2.5)),
+      chatMsg(S, 'd.d', OMAR, 2, 'Could you also collect their worksheets?'));
+    assert.deepEqual(sb.gs.runCaptureNow_(), { gmail: 0, chat: 1, chatMessages: 1, chatMode: 'api', errors: [] });
+    assert.equal(chatRows(sb)[1].snippet, 'Omar: Could you also collect their worksheets?');
+    assert.equal(chatRows(sb)[1].sourceKey, 'chat:' + S + '/messages/d.d');
+    // Pure: a deleted message (deleteTime or deletionMetadata) marks a position but is never included.
+    const me = new Set([ME.email]);
+    const space = server.spaces[0];
+    const marked = Object.assign(chatMsg(S, 'e.e', OMAR, 1, 'Text that is still in the tombstone for some reason'), { deletionMetadata: { deletionType: 'SPACE_OWNER' } });
+    assert.deepEqual(sb.gs.chatNewMessages([marked], space, me, new Set()), []);
+    assert.deepEqual(sb.gs.chatNewMessages(server.messages[S], space, me, new Set(['chat:' + S + '/messages/b.b'])).map((m) => m.name),
+      [S + '/messages/d.d'], 'the deleted b.b is still where the last run stopped');
+  }, { now: WEEKDAY_NOW });
+
+  await t.test('Chat: overlapping runs — the run that read MORE writes first, the other drops its row', (sb, assert) => {
+    const run = overlappingRuns(sb, false);
+    assert.deepEqual(run.inner, { gmail: 0, chat: 1, chatMessages: 3, chatMode: 'api', errors: [] });
+    assert.deepEqual(run.outer, { gmail: 0, chat: 0, chatMessages: 0, chatMode: 'api', errors: [] }, 'its messages are already in the other row');
+    const rows = chatRows(sb);
+    assert.equal(rows.length, 1, 'messages 1 and 2 are not captured twice');
+    assert.equal(rows[0].snippet, 'Sara: Please check the robotics kits today · Sara: The order form is on the shared drive · Sara: Also please count the spare servos');
+    assert.equal(rows[0].sourceKey, 'chat:' + run.S + '/messages/3.3');
+    const logs = sb.mock.logRows().filter((r) => r.fn === 'captureInbox');
+    assert.match(logs[logs.length - 1].message, /1 row\(s\) already captured by an overlapping run/);
+    assert.equal(sb.gs.runCaptureNow_().chat, 0, 'the next run starts after message 3');
+  }, { now: WEEKDAY_NOW });
+
+  await t.test('Chat: overlapping runs — the run that read LESS writes first, the other keeps only what is newer', (sb, assert) => {
+    const run = overlappingRuns(sb, true);
+    assert.deepEqual(run.inner, { gmail: 0, chat: 1, chatMessages: 2, chatMode: 'api', errors: [] });
+    assert.deepEqual(run.outer, { gmail: 0, chat: 1, chatMessages: 1, chatMode: 'api', errors: [] }, 'cut to the message the other run had not captured');
+    const rows = chatRows(sb);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].snippet, 'Sara: Please check the robotics kits today · Sara: The order form is on the shared drive');
+    assert.equal(rows[0].sourceKey, 'chat:' + run.S + '/messages/2.2');
+    assert.equal(rows[1].snippet, 'Sara: Also please count the spare servos', 'messages 1 and 2 are not repeated');
+    assert.equal(rows[1].sourceKey, 'chat:' + run.S + '/messages/3.3');
+    assert.equal(rows[1].from, 'Sara Khan <sara.khan@aisa.sch.ae>');
+    const logs = sb.mock.logRows().filter((r) => r.fn === 'captureInbox');
+    assert.match(logs[logs.length - 1].message, /1 Chat row\(s\) cut to the messages an overlapping run had not captured/);
+    assert.equal(sb.gs.runCaptureNow_().chat, 0);
+    // Pure: rows of other spaces, email-fallback rows and rows with nothing new in the sheet pass unchanged.
+    const space = dmSpace('DMLAP');
+    const msgs = [chatMsg(run.S, '1.1', SARA, 5, 'Please check the robotics kits today'), chatMsg(run.S, '2.2', SARA, 4, 'The order form is on the shared drive')];
+    const row = sb.gs.chatConversationToInbox(msgs, space);
+    const start = new Set(['chat:spaces/OTHER/messages/9.9']);
+    assert.equal(sb.gs.chatReconcileRow(row, new Set(['chat:spaces/OTHER/messages/9.9', 'chat:spaces/OTHER/messages/10.10']), start), row, 'another space');
+    assert.equal(sb.gs.chatReconcileRow(row, new Set(['chat:' + run.S + '/messages/0.0']), new Set(['chat:' + run.S + '/messages/0.0'])), row, 'known at the start');
+    const email = { source: 'Chat', sourceKey: 'chat:email:abc', snippet: 'x' };
+    assert.equal(sb.gs.chatReconcileRow(email, new Set(['chat:' + run.S + '/messages/1.1']), new Set()), email, 'email-fallback row');
+    assert.equal(sb.gs.chatReconcileRow(row, new Set(['chat:' + run.S + '/messages/2.2']), new Set()), null, 'everything already written');
+    const cut = sb.gs.chatReconcileRow(row, new Set(['chat:' + run.S + '/messages/1.1']), new Set());
+    assert.equal(cut.snippet, 'Sara: The order form is on the shared drive');
+    assert.equal(cut.messageCount, 1);
+    assert.equal(sb.gs.chatReconcileRow(row, new Set(['chat:' + run.S + '/messages/7.7']), new Set()), null, 'another run read a message this one did not');
   }, { now: WEEKDAY_NOW });
 
   await t.test('Chat: a long conversation keeps the NEWEST text in a snippet of at most 400 characters', (sb, assert) => {

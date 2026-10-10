@@ -8,7 +8,10 @@
  * buildChatServer({ spaces, messages, messagePageSize }) → { handler, state, spaces, messages }
  *   Serves the given spaces (one page) and messages. `messages` (space name → array) is read on
  *   every request, so a test can push new messages between two capture runs; each array is served
- *   in its stored order (not sorted), filtered by the create_time in the request's filter.
+ *   in its stored order (not sorted), filtered by the create_time in the request's filter. A message
+ *   marked deleted (deleteMessage) is served only to a request with showDeleted=true, as a tombstone.
+ * deleteMessage(message, at) marks a fixture message deleted the way messages.list then shows it:
+ *   deleteTime + deletionMetadata set, text gone.
  * buildLiveReplay({ now }) → buildChatServer result + { users, texts }
  *   Direct messages modelled on the first live capture (2026-10-10): the noise rows and the
  *   useful rows Brandon and Claude triaged by hand, verbatim (Arabic included).
@@ -18,13 +21,18 @@ function iso(date) {
   return new Date(date).toISOString();
 }
 
-/** The parts of the messages endpoint every fixture shares: create_time filter, optional paging. */
+/**
+ * The parts of the messages endpoint every fixture shares: create_time filter, optional paging, and
+ * deleted messages (deleteTime or deletionMetadata set) left out unless showDeleted=true, as the API does.
+ */
 function serveMessages(list, u, pageSize) {
   const filter = u.searchParams.get('filter') || '';
   const fm = /create_time > "([^"]+)"/.exec(filter);
   if (!fm) return { code: 400, body: { error: { code: 400, message: 'bad filter: ' + filter, status: 'INVALID_ARGUMENT' } } };
   const cutoff = new Date(fm[1]).getTime();
-  const inWindow = (list || []).filter((msg) => new Date(msg.createTime).getTime() > cutoff);
+  const showDeleted = u.searchParams.get('showDeleted') === 'true';
+  const inWindow = (list || []).filter((msg) => new Date(msg.createTime).getTime() > cutoff &&
+    (showDeleted || !(msg.deleteTime || msg.deletionMetadata)));
   if (!inWindow.length) return { code: 200, body: {} };
   if (!pageSize || inWindow.length <= pageSize) return { code: 200, body: { messages: inWindow } };
   const start = Number(u.searchParams.get('pageToken') || 0);
@@ -207,4 +215,12 @@ function buildChatFixture(options) {
   };
 }
 
-module.exports = { buildChatFixture, buildChatServer, buildLiveReplay, ME };
+function deleteMessage(message, at) {
+  message.deleteTime = iso(at || Date.now());
+  message.deletionMetadata = { deletionType: 'CREATOR' };
+  delete message.text;
+  delete message.formattedText;
+  return message;
+}
+
+module.exports = { buildChatFixture, buildChatServer, buildLiveReplay, deleteMessage, ME };

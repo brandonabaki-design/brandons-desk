@@ -15,12 +15,15 @@ function captureInbox() {
   const weekday = isoWeekday(today);
   if (weekday === 6 || weekday === 7) {
     log('captureInbox', 'INFO', 'Weekend (' + today + '): capture skipped');
-    return { gmail: 0, chat: 0, chatMode: 'off', errors: [], skipped: true };
+    return { gmail: 0, chat: 0, chatMessages: 0, chatMode: 'off', errors: [], skipped: true };
   }
   return runCapture_();
 }
 
-/** runCaptureNow: {} → {gmail, chat, chatMode, errors}. Bypasses the weekday guard. */
+/**
+ * runCaptureNow: {} → {gmail, chat, chatMessages, chatMode, errors}. Bypasses the weekday guard.
+ * chat = Chat Inbox rows written (one per conversation), chatMessages = messages in those rows.
+ */
 function runCaptureNow_() {
   return runCapture_();
 }
@@ -134,10 +137,16 @@ function inboxToRow_(item, id, now) {
   return row;
 }
 
+/** Chat rows in a list of Inbox row objects, and the messages they carry (an email-fallback row is one message). */
+function chatCounts_(items) {
+  const chat = items.filter((item) => item.source === 'Chat');
+  return { rows: chat.length, messages: chat.reduce((n, item) => n + (Number(item.messageCount) || 1), 0) };
+}
+
 /** Shared capture body: heal, collect, append, log. */
 function runCapture_() {
   const config = readConfig();
-  const result = { gmail: 0, chat: 0, chatMode: 'off', errors: [] };
+  const result = { gmail: 0, chat: 0, chatMessages: 0, chatMode: 'off', errors: [] };
   try { healSheet(TABS.WORK); healSheet(TABS.PERSONAL); } catch (e) { result.errors.push('heal: ' + errorMessage(e)); }
   const existingKeys = existingSourceKeys();
   const me = myAddresses(config);
@@ -152,7 +161,9 @@ function runCapture_() {
   if (config.CHAT_ENABLED) {
     const chat = captureChat(config, existingKeys, me, now);
     items = items.concat(chat.rows);
-    result.chat = chat.rows.length;
+    const counted = chatCounts_(chat.rows);
+    result.chat = counted.rows;
+    result.chatMessages = counted.messages;
     result.chatMode = chat.mode;
     result.errors = result.errors.concat(chat.errors);
   }
@@ -177,10 +188,13 @@ function runCapture_() {
       appendRows(TABS.INBOX, rows);
     });
     result.gmail = items.filter((item) => item.source === 'Gmail').length;
-    result.chat = items.filter((item) => item.source === 'Chat').length;
+    const written = chatCounts_(items);
+    result.chat = written.rows;
+    result.chatMessages = written.messages;
   }
   log('captureInbox', result.errors.length ? 'WARN' : 'INFO',
     'gmail ' + result.gmail + ', chat ' + result.chat + ' (mode ' + result.chatMode + ')' +
+    (result.chat ? ', ' + result.chatMessages + ' chat message(s)' : '') +
     (dropped ? '; ' + dropped + ' row(s) already captured by an overlapping run' : '') +
     (result.errors.length ? '; errors: ' + result.errors.join(' | ') : ''));
   return result;

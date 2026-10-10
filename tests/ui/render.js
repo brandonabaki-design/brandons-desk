@@ -312,7 +312,7 @@ async function runViewport(browser, url, vp, opts) {
     check(afterIgnore.text === 'Promote' && /Direct message|Question about the AI club/.test(afterIgnore.item), tag + ': Ignore moves focus to the next item\'s Promote button ' + JSON.stringify([afterIgnore.text, afterIgnore.id]));
     await clearToasts(page);
     await page.click('#inbox-capture');
-    check(await waitToast(page, 'Captured 1 from Gmail and 0 from Chat (Chat mode: api)'), tag + ': capture toast with counts and chatMode');
+    check(await waitToast(page, 'Captured: Gmail 1 · Chat 0 conversations (Chat mode: api)'), tag + ': capture toast with counts (Chat counted in conversations) and chatMode');
     await page.waitForFunction(() => document.querySelectorAll('#inbox-list .item').length === 5);
     ok(tag + ': capture refreshes the list');
     await clearToasts(page);

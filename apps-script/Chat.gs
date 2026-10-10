@@ -7,6 +7,24 @@ const CHAT_API_BASE_ = 'https://chat.googleapis.com/v1/';
 const CHAT_NOREPLY_ = 'chat-noreply@google.com';
 const CHAT_LINK_RE_ = /https:\/\/(?:chat\.google\.com|mail\.google\.com\/chat)\/[^\s"'<>)\]]+/;
 
+/**
+ * A message whose whole text (normalised by chatNormalise_) is one of these is only an
+ * acknowledgement and is never shown (SPEC 6). Normalised once, at first use.
+ */
+const CHAT_ACKS_ = ['ok', 'okay', 'k', 'thanks', 'thank you', 'thx', 'ty', 'correct', 'yes', 'yeah', 'yep', 'no', 'nope',
+  'sure', 'go', 'done', 'noted', 'great', 'perfect', 'cool', 'nice', 'lol', 'haha', 'good', 'fine', 'got it', 'will do',
+  'on it', 'see you', 'take care', 'شكرا', 'شكراً', 'تمام', 'حاضر', 'ماشي', 'اوكي', 'نعم', 'لا'];
+/** Interjections that, like the acknowledgements, do not count towards the length at the start or end of a message. */
+const CHAT_INTERJECTIONS_ = ['oh', 'ohh', 'ah', 'ahh', 'aw', 'aww', 'awww', 'ooh', 'wow', 'oops', 'hmm', 'um', 'uh', 'hi', 'hey', 'hello'];
+/** Letters and digits a message needs (outside phone numbers and edge filler) to count without "?" or a URL. */
+const CHAT_MIN_CHARS_ = 12;
+const CHAT_URL_RE_ = /https?:\/\/\S/i;
+const CHAT_URLS_RE_ = /https?:\/\/\S+/gi;
+/** Phone-number-like: 7 or more digits, optionally with a leading + and space - . ( ) / between them. */
+const CHAT_PHONE_RE_ = /\+?\d(?:[\s\-.()\/]*\d){6,}/g;
+const CHAT_SNIPPET_JOIN_ = ' · ';
+let chatFiller_ = null;
+
 /** Control-flow error carrying the HTTP code of a failed Chat API call. */
 function chatHttpError_(code, body, url) {
   const err = new Error('Chat API HTTP ' + code + ' for ' + url);
@@ -120,24 +138,177 @@ function chatMessageWanted(message, space, meSet) {
   return mentionsMe_(message, meSet);
 }
 
-/** Inbox row object for a Chat API message. */
-function chatMessageToInbox(message, space) {
-  const sender = message.sender || {};
-  const from = [sender.displayName || '', sender.email ? '<' + sender.email + '>' : ''].filter(Boolean).join(' ') || 'Chat user';
+function chatText_(message) {
+  return str(message && (message.text || message.formattedText));
+}
+
+function chatKey_(message) {
+  return 'chat:' + str(message && message.name);
+}
+
+/**
+ * Lower-case, combining marks (Arabic harakat/tanween) and tatweel removed, alef forms unified,
+ * every character that is not a letter, digit or space (punctuation, emoji, symbols) turned into
+ * a space, whitespace collapsed.
+ */
+function chatNormalise_(s) {
+  return str(s).toLowerCase()
+    .replace(/[\p{M}\u0640]/gu, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** {acks:Set, filler:Set, longest:n} built from CHAT_ACKS_ + CHAT_INTERJECTIONS_ (normalised). */
+function chatFillerSets_() {
+  if (chatFiller_) return chatFiller_;
+  const acks = new Set(CHAT_ACKS_.map(chatNormalise_));
+  const filler = new Set(Array.from(acks).concat(CHAT_INTERJECTIONS_.map(chatNormalise_)));
+  let longest = 1;
+  filler.forEach((p) => { longest = Math.max(longest, p.split(' ').length); });
+  chatFiller_ = { acks: acks, filler: filler, longest: longest };
+  return chatFiller_;
+}
+
+/**
+ * Letters and digits left in normalised text once acknowledgement phrases and interjections are
+ * peeled off its start and its end ("oh shoot take care" → "oh shoot" → "shoot" → 5).
+ */
+function chatCoreLength_(normalised) {
+  const sets = chatFillerSets_();
+  const words = normalised ? normalised.split(' ') : [];
+  let start = 0;
+  let end = words.length;
+  const peel = (fromStart) => {
+    for (let n = Math.min(sets.longest, end - start); n >= 1; n--) {
+      const phrase = (fromStart ? words.slice(start, start + n) : words.slice(end - n, end)).join(' ');
+      if (sets.filler.has(phrase)) {
+        if (fromStart) start += n; else end -= n;
+        return true;
+      }
+    }
+    return false;
+  };
+  while (start < end && peel(true)) { /* peel leading filler */ }
+  while (start < end && peel(false)) { /* peel trailing filler */ }
+  return Array.from(words.slice(start, end).join('')).length;
+}
+
+/**
+ * Is this Chat message text worth an Inbox line (SPEC 6)? Pure.
+ * A URL always is. Otherwise, with phone numbers taken out: it needs a letter, must not be only
+ * an acknowledgement, and needs a "?" (or "؟") or at least CHAT_MIN_CHARS_ letters/digits once
+ * acknowledgements and interjections are peeled off its start and end.
+ */
+function chatTextSubstantive(text) {
+  const raw = str(text).trim();
+  if (!raw) return false;
+  if (CHAT_URL_RE_.test(raw)) return true;
+  const core = chatNormalise_(raw.replace(CHAT_URLS_RE_, ' ').replace(CHAT_PHONE_RE_, ' '));
+  if (!/\p{L}/u.test(core)) return false;
+  if (chatFillerSets_().acks.has(core)) return false;
+  if (/[?؟]/.test(raw)) return true;
+  return chatCoreLength_(core) >= CHAT_MIN_CHARS_;
+}
+
+/**
+ * The text chatTextSubstantive judges: the message text without its @mentions, so that
+ * "@Brandon Abaki ok" is still only an acknowledgement. Annotated USER_MENTION ranges are cut
+ * when they start with "@" (startIndex omitted = 0, as proto3 JSON drops zero values); any other
+ * "@word" left over is cut too.
+ */
+function chatTextForFilter_(message) {
+  let text = chatText_(message);
+  const ann = Array.isArray(message && message.annotations) ? message.annotations : [];
+  ann.filter((a) => a && a.type === 'USER_MENTION' && Number(a.length) > 0)
+    .map((a) => ({ start: Number(a.startIndex) || 0, length: Number(a.length) }))
+    .sort((a, b) => b.start - a.start)
+    .forEach((r) => {
+      if (text.charAt(r.start) === '@') text = text.slice(0, r.start) + ' ' + text.slice(r.start + r.length);
+    });
+  return text.replace(/(^|\s)@\S+/g, '$1');
+}
+
+/** Messages sorted by createTime, oldest first (stable; a missing/bad time sorts first). */
+function chatSortByTime_(messages) {
+  return (messages || []).map((m, i) => {
+    const t = m && m.createTime ? Date.parse(m.createTime) : NaN;
+    return { m: m, t: isNaN(t) ? 0 : t, i: i };
+  }).sort((a, b) => (a.t - b.t) || (a.i - b.i)).map((x) => x.m);
+}
+
+/**
+ * The messages of one space that go into this run's Inbox row, oldest first. Pure.
+ * `messages` is every message of the space in the lookback window. Only messages after the
+ * newest KNOWN one (key chat:<name> already in existingKeys) are new; of those, the wanted
+ * (chatMessageWanted) and substantive (chatTextSubstantive of the text without @mentions) ones
+ * are returned.
+ */
+function chatNewMessages(messages, space, meSet, existingKeys) {
+  const sorted = chatSortByTime_(messages).filter((m) => m && typeof m === 'object');
+  let lastKnown = -1;
+  sorted.forEach((m, i) => { if (existingKeys.has(chatKey_(m))) lastKnown = i; });
+  return sorted.slice(lastKnown + 1).filter((m) => chatMessageWanted(m, space, meSet) && chatTextSubstantive(chatTextForFilter_(m)));
+}
+
+function chatSenderLabel_(sender) {
+  const s = sender || {};
+  return collapseWhitespace(s.displayName) || str(s.email).trim() || 'Chat user';
+}
+
+function chatSenderFirstName_(sender) {
+  const s = sender || {};
+  const name = collapseWhitespace(s.displayName);
+  if (name) return name.split(' ')[0];
+  const email = str(s.email).trim();
+  return email ? email.split('@')[0] : 'Chat user';
+}
+
+/** Keeps the END of s: longer than max → "… " + the last characters, total ≤ max. */
+function chatKeepEnd_(s, max) {
+  if (s.length <= max) return s;
+  let tail = s.slice(s.length - (max - 2));
+  const c = tail.charCodeAt(0);
+  if (c >= 0xDC00 && c <= 0xDFFF) tail = tail.slice(1); // never start on half of a surrogate pair
+  return '… ' + tail.replace(/^\s+/, '');
+}
+
+function chatSubject_(space) {
+  const name = collapseWhitespace(space && space.displayName);
+  if (name) return name;
+  return space && space.spaceType === 'GROUP_CHAT' ? 'Group chat' : 'Direct message';
+}
+
+/**
+ * Inbox row object for one space from its included messages (oldest first, non-empty). Pure.
+ * messageCount is internal (counted into runCaptureNow's chatMessages, never written to the sheet).
+ */
+function chatConversationToInbox(messages, space) {
+  const names = [];
+  messages.forEach((m) => {
+    const label = chatSenderLabel_(m.sender);
+    if (names.indexOf(label) < 0) names.push(label);
+  });
+  const firstEmail = str(messages[0].sender && messages[0].sender.email).trim();
+  if (firstEmail && names[0] !== firstEmail) names[0] += ' <' + firstEmail + '>';
+  const lines = messages.map((m) => chatSenderFirstName_(m.sender) + ': ' + collapseWhitespace(chatText_(m)));
   return {
     source: 'Chat',
-    from: from,
-    subject: str(space && space.displayName).trim() || 'Direct message',
-    snippet: cleanSnippet(message.text || message.formattedText || '', SNIPPET_MAX),
+    from: names.join(', '),
+    subject: chatSubject_(space),
+    snippet: chatKeepEnd_(lines.join(CHAT_SNIPPET_JOIN_), SNIPPET_MAX),
     link: chatSpaceLink_(space),
-    sourceKey: 'chat:' + str(message.name),
-    categoryHint: 'Work'
+    sourceKey: chatKey_(messages[messages.length - 1]),
+    categoryHint: 'Work',
+    messageCount: messages.length
   };
 }
 
 /**
- * Chat capture via the API. Returns {rows, mode, errors}: mode "api" on success (or after
- * a 429 skip), "email" when the API answered 401/403 (rows then come from the email fallback).
+ * Chat capture via the API. Returns {rows, mode, errors}: one row per space with something new
+ * (chatNewMessages); mode "api" on success (or after a 429 skip), "email" when the API answered
+ * 401/403 (rows then come from the email fallback, one per notification email).
  */
 function captureChat(config, existingKeys, meSet, now) {
   guard();
@@ -162,14 +333,13 @@ function captureChat(config, existingKeys, meSet, now) {
         const last = parseDate(space.lastActiveTime);
         if (last && last.getTime() < cutoff.getTime()) return;
       }
-      const messages = chatListMessages_(token, space.name, cutoffIso);
-      messages.forEach((message) => {
-        if (!chatMessageWanted(message, space, meSet)) return;
-        const row = chatMessageToInbox(message, space);
-        if (existingKeys.has(row.sourceKey)) return;
-        existingKeys.add(row.sourceKey);
-        rows.push(row);
-      });
+      // One row per space: its new, wanted and substantive messages (SPEC 6).
+      const included = chatNewMessages(chatListMessages_(token, space.name, cutoffIso), space, meSet, existingKeys);
+      if (!included.length) return;
+      const row = chatConversationToInbox(included, space);
+      if (existingKeys.has(row.sourceKey)) return;
+      existingKeys.add(row.sourceKey);
+      rows.push(row);
     });
     return { rows: rows, mode: 'api', errors: errors };
   } catch (e) {

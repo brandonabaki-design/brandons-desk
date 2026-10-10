@@ -520,7 +520,7 @@ async function runScenario(browser, url, vp, xlsxOk) {
     check(fi.text === 'Promote' && fi.in === 'I-e2e00003', tag + ': Ignore moves focus to the next item\'s Promote button ' + JSON.stringify(fi));
     await clearToasts(page);
     await page.click('#inbox-capture');
-    check(await waitToast(page, 'Captured 1 from Gmail and 0 from Chat (Chat mode: api)'), tag + ': capture toast with counts and chatMode');
+    check(await waitToast(page, 'Captured: Gmail 1 · Chat 0 conversations (Chat mode: api)'), tag + ': capture toast with counts (Chat counted in conversations) and chatMode');
     await page.waitForFunction(() => document.querySelectorAll('#inbox-list .item').length === 3);
     const captured = S.inbox().find((i) => i.sourceKey === 'gmail:msg-e2e-1');
     check(!!captured && captured.subject === 'Hub mentor schedule' && captured.link === 'https://mail.google.com/mail/u/bbaki@aisa.sch.ae/#all/thr-e2e-1' && captured.status === 'New',
@@ -531,7 +531,7 @@ async function runScenario(browser, url, vp, xlsxOk) {
     // Chat API answers 403 (SERVICE_DISABLED): the real server switches to the email fallback for this run and the UI says so.
     sb.mock.urlFetch.handler = buildChatFixture({ now: NOW, mode: 'forbidden' }).handler;
     await page.click('#inbox-capture');
-    check(await waitToast(page, 'Captured 0 from Gmail and 0 from Chat (Chat mode: email)'), tag + ': 403 from the Chat API is reported as email mode (nothing new to capture)');
+    check(await waitToast(page, 'Captured: Gmail 0 · Chat 0 conversations (Chat mode: email)'), tag + ': 403 from the Chat API is reported as email mode (nothing new to capture)');
     await page.waitForSelector('#inbox-chatmode:not([hidden])');
     const modeNote = await page.textContent('#inbox-chatmode');
     check(/email mode/.test(modeNote) && /delayed/i.test(modeNote) && /partial/i.test(modeNote), tag + ': email mode labelled as delayed and partial: ' + JSON.stringify(modeNote));

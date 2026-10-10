@@ -254,7 +254,7 @@
       var n = inbox.length + 1;
       inbox.push(inboxRow(n, { from: 'Priya Nair <pnair@aisa.sch.ae>', subject: 'Hub mentor schedule', snippet: 'Could you confirm the mentor rota for next week? Two mentors asked to swap.', link: 'https://mail.google.com/mail/u/bbaki@aisa.sch.ae/#all/18f3c0d1e2f3a4b' + n, sourceKey: 'gmail:18f3c0d1e2f3a4b' + n, captured: NOW }));
       log.unshift({ time: NOW, fn: 'runCaptureNow', level: 'INFO', message: 'gmail 1, chat 0, chatMode ' + window.__mock.chatMode });
-      return { gmail: 1, chat: 0, chatMode: window.__mock.chatMode, errors: [] };
+      return { gmail: 1, chat: 0, chatMessages: 0, chatMode: window.__mock.chatMode, errors: [] };
     },
     getLog: function (p) { return { rows: clone(log.slice(0, p.limit || 100)) }; }
   };

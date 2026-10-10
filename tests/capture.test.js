@@ -1,6 +1,6 @@
 'use strict';
 const { fixture, fixtureJson, findUnsafe } = require('./fixtures/helpers');
-const { buildChatFixture } = require('./fixtures/chat-api');
+const { buildChatFixture, buildChatServer, buildLiveReplay, ME } = require('./fixtures/chat-api');
 
 const WEEKDAY_NOW = '2026-10-08T02:15:00Z'; // Thursday 06:15 Dubai
 const WEEKEND_NOW = '2026-10-10T02:15:00Z'; // Saturday 06:15 Dubai
@@ -47,6 +47,37 @@ function chatEmailThread() {
   };
 }
 
+// ---- Chat conversation fixtures (SPEC 6 "Capture (Chat)": one row per space, new + substantive messages) ----
+const SARA = { name: 'users/1', displayName: 'Sara Khan', email: 'sara.khan@aisa.sch.ae', type: 'HUMAN' };
+const OMAR = { name: 'users/2', displayName: 'Omar Haddad', email: 'omar@aisa.sch.ae', type: 'HUMAN' };
+const MAYA = { name: 'users/3', displayName: 'Maya Lin', email: 'maya.lin@aisa.sch.ae', type: 'HUMAN' };
+const NADIA = { name: 'users/4', displayName: 'Nadia', email: 'nadia@aisa.sch.ae', type: 'HUMAN' };
+const LINA = { name: 'users/7', displayName: 'Lina Park', email: 'lpark@aisa.sch.ae', type: 'HUMAN' };
+const BOT = { name: 'users/bot', displayName: 'Reminder Bot', type: 'BOT' };
+const MENTION_ME = { type: 'USER_MENTION', length: 14, userMention: { user: { name: 'users/me', email: 'bbaki@aisa.sch.ae', type: 'HUMAN' }, type: 'MENTION' } };
+
+function hoursBefore(h) {
+  return new Date(new Date(WEEKDAY_NOW).getTime() - h * 3600000).toISOString();
+}
+function chatMsg(space, id, sender, h, text, extra) {
+  return Object.assign({ name: space + '/messages/' + id, sender: sender, createTime: hoursBefore(h), text: text }, extra || {});
+}
+function dmSpace(id, extra) {
+  return Object.assign({ name: 'spaces/' + id, spaceType: 'DIRECT_MESSAGE', lastActiveTime: hoursBefore(1), spaceUri: 'https://chat.google.com/dm/' + id }, extra || {});
+}
+function useChatServer(sb, server) {
+  sb.mock.urlFetch.handler = server.handler;
+  sb.mock.gmail.setThreads([]);
+}
+function chatRows(sb) {
+  return sb.gs.readRows('Inbox').filter((r) => r.source === 'Chat');
+}
+/** An Inbox row the first live run (one row per message) would have written for `message`. */
+function perMessageRow(id, message, status) {
+  return [id, new Date('2026-10-07T03:00:00Z'), 'Chat', message.sender.displayName, 'Direct message', message.text || '',
+    'https://chat.google.com/dm/X', 'chat:' + message.name, status || 'New', '', 'Work'];
+}
+
 module.exports = async function (t) {
   await t.test('Gmail capture: bulk load, me-detection, bulk filters, dedupe, snippet cleaning and link format', (sb, assert) => {
     sb.mock.seed('Config', [['CHAT_ENABLED', 'FALSE', '']]);
@@ -55,7 +86,7 @@ module.exports = async function (t) {
     sb.mock.gmail.bulkLoads = 0;
     sb.mock.gmail.perThreadLoads = 0;
     const result = sb.gs.runCaptureNow_();
-    assert.deepEqual(result, { gmail: 3, chat: 0, chatMode: 'off', errors: [] });
+    assert.deepEqual(result, { gmail: 3, chat: 0, chatMessages: 0, chatMode: 'off', errors: [] });
     assert.equal(sb.mock.gmail.searches.length, 1, 'one search');
     assert.match(sb.mock.gmail.searches[0].query, /newer_than:2d/);
     assert.equal(sb.mock.gmail.searches[0].max, 50);
@@ -159,7 +190,7 @@ module.exports = async function (t) {
     // Distinct lookbacks pin which Config key drives which cutoff.
     sb.mock.seed('Config', [['CHAT_LOOKBACK_DAYS', '5', ''], ['GMAIL_LOOKBACK_DAYS', '1', '']]);
     const result = sb.gs.runCaptureNow_();
-    assert.deepEqual(result, { gmail: 0, chat: 3, chatMode: 'api', errors: [] });
+    assert.deepEqual(result, { gmail: 0, chat: 3, chatMessages: 3, chatMode: 'api', errors: [] });
     assert.match(sb.mock.gmail.searches[0].query, /newer_than:1d/, 'GMAIL_LOOKBACK_DAYS drives the Gmail query');
     const rows = sb.gs.readRows('Inbox');
     assert.deepEqual(rows.map((r) => r.sourceKey), chat.expectedKeys);
@@ -167,13 +198,15 @@ module.exports = async function (t) {
     assert.equal(dm.source, 'Chat');
     assert.equal(dm.from, 'Sara Khan <sara.khan@aisa.sch.ae>');
     assert.equal(dm.subject, 'Direct message');
-    assert.equal(dm.snippet, 'Can you share the AI workshop slides before Thursday?');
+    assert.equal(dm.snippet, 'Sara: Can you share the AI workshop slides before Thursday?', 'my own reply after it is not shown');
     assert.equal(dm.link, 'https://chat.google.com/dm/DM1', 'spaceUri preferred');
     assert.equal(dm.categoryHint, 'Work');
     assert.equal(rows[1].link, 'https://mail.google.com/chat/u/0/#chat/space/GRP1', 'fallback link without spaceUri');
-    assert.equal(rows[1].subject, 'Direct message');
+    assert.equal(rows[1].subject, 'Group chat', 'an unnamed GROUP_CHAT');
+    assert.equal(rows[1].snippet, 'Omar: Who is covering the lab on Monday?', 'the bot message is not shown');
     assert.equal(rows[2].subject, 'Science Department');
     assert.equal(rows[2].from, 'Maya Lin <maya.lin@aisa.sch.ae>');
+    assert.equal(rows[2].snippet, 'Maya: @Brandon Abaki can you approve the lab booking?', 'SPACE: only the message that @mentions me');
     // Requests: 2 space pages + messages for DM1, GRP1, ROOM1 only (OLD and the bot DM are skipped);
     // ROOM1 answers in two pages, so it is fetched twice.
     const urls = sb.mock.urlFetch.calls.map((c) => c.url);
@@ -229,11 +262,247 @@ module.exports = async function (t) {
     assert.equal(sb.gs.chatMessageWanted(human('x@y.com', { annotations: 'junk' }), room, me), false, 'malformed annotations are ignored');
     assert.equal(sb.gs.chatMessageWanted(human('x@y.com', { annotations: [null, {}] }), room, me), false);
     assert.equal(sb.gs.chatMessageWanted(null, room, me), false);
-    const row = sb.gs.chatMessageToInbox(human('x@y.com'), { name: 'spaces/X', spaceType: 'SPACE', displayName: '' });
+    const row = sb.gs.chatConversationToInbox([human('x@y.com')], { name: 'spaces/X', spaceType: 'SPACE', displayName: '' });
     assert.equal(row.link, 'https://mail.google.com/chat/u/0/#chat/space/X');
     assert.equal(row.subject, 'Direct message');
     assert.equal(row.sourceKey, 'chat:spaces/X/messages/1');
   });
+
+  await t.test('chatTextSubstantive: every noise row of the first live run is dropped, every useful one kept (Arabic verbatim)', (sb, assert) => {
+    const live = buildLiveReplay({ now: WEEKDAY_NOW });
+    live.texts.noise.forEach((text) => assert.equal(sb.gs.chatTextSubstantive(text), false, 'noise: ' + JSON.stringify(text)));
+    live.texts.useful.forEach((text) => assert.equal(sb.gs.chatTextSubstantive(text), true, 'useful: ' + JSON.stringify(text)));
+    // The Arabic noise, spelled out: good morning, how are you today, come for breakfast, waiting for you.
+    ['صباح الخير', 'كيفك اليوم', 'تفضل عالفطور', 'بانتظارك'].forEach((text) => assert.equal(sb.gs.chatTextSubstantive(text), false, text));
+    // Acknowledgements, whatever the case, punctuation, emoji or diacritics.
+    ['OK', 'Thanks!! 🙏', 'thank you.', 'Got it 👍', 'شكراً', 'شكرا!', 'تمام', 'Take care', '  Will do  ', 'Ok?', 'Yes!!!', 'لا'].forEach((text) =>
+      assert.equal(sb.gs.chatTextSubstantive(text), false, 'acknowledgement: ' + text));
+    // Never substantive: empty, emoji-only, numbers-only, phone-number-like.
+    [null, undefined, '', '   ', '👍👍', '😂😂😂', '216', '12345678901234', '+971 50 126 0445', '(050) 648-0801', 'My number is +971 50 126 0445',
+      'Sure - 0501260445'].forEach((text) => assert.equal(sb.gs.chatTextSubstantive(text), false, 'never: ' + JSON.stringify(text)));
+    // Short pleasantries: under 12 letters/digits once acknowledgements and interjections are peeled off the ends.
+    ['I saw it.', 'Aww poor thing', 'Oh shoot! Take care', 'thanks a lot', 'ok ok ok ok ok', 'Hi Brandon'].forEach((text) =>
+      assert.equal(sb.gs.chatTextSubstantive(text), false, 'short: ' + text));
+    // Kept: a question (Latin or Arabic mark), a URL, or 12+ letters/digits.
+    ['Why?', 'Room 216?', 'هل يمكنك الحضور؟', 'https://docs.google.com/document/d/abc', 'thanks https://drive.google.com/x',
+      'Please send the rubric', 'Call me on 050 126 0445 about the trip tomorrow', 'Good morning! The bus is late today',
+      'Can you share the AI workshop slides before Thursday?'].forEach((text) =>
+      assert.equal(sb.gs.chatTextSubstantive(text), true, 'kept: ' + text));
+  });
+
+  await t.test('Chat: 8 messages in one DM become ONE Inbox row (From, Subject, Snippet oldest first, key = newest message)', (sb, assert) => {
+    const texts = ['Can you check the robotics kits?', 'Two kits have no batteries', 'The order form is on the drive',
+      'Huda needs the parts list by Tuesday', 'Please count the spare servos', 'The supplier closes next week',
+      'Let me know if I should call them', 'I am in the lab after lunch'];
+    const all = texts.map((text, i) => chatMsg('spaces/DM8', (i + 1) + '.' + (i + 1), SARA, 10 - i, text));
+    // Served out of chronological order and in pages of 3: the capture sorts by createTime across pages.
+    const served = [4, 0, 7, 2, 1, 6, 3, 5].map((i) => all[i]);
+    const server = buildChatServer({ spaces: [dmSpace('DM8')], messages: { 'spaces/DM8': served }, messagePageSize: 3 });
+    useChatServer(sb, server);
+    const result = sb.gs.runCaptureNow_();
+    assert.deepEqual(result, { gmail: 0, chat: 1, chatMessages: 8, chatMode: 'api', errors: [] });
+    assert.ok(server.state.calls.some((c) => /messages\?.*pageToken=6/.test(c.url)), 'all three message pages were read');
+    const rows = chatRows(sb);
+    assert.equal(rows.length, 1);
+    const row = rows[0];
+    assert.equal(row.from, 'Sara Khan <sara.khan@aisa.sch.ae>');
+    assert.equal(row.subject, 'Direct message');
+    const expected = texts.map((text) => 'Sara: ' + text).join(' · ');
+    assert.ok(expected.length < 400, 'fixture fits without truncation');
+    assert.equal(row.snippet, expected);
+    assert.equal(row.sourceKey, 'chat:spaces/DM8/messages/8.8', 'the newest message by createTime, not the last one served');
+    assert.equal(row.link, 'https://chat.google.com/dm/DM8');
+    assert.equal(row.categoryHint, 'Work');
+    assert.equal(row.status, 'New');
+    assert.equal(Object.prototype.toString.call(row.captured), '[object Date]');
+    assert.equal(sb.mock.rows('Inbox')[0].length, 11, 'still the 11 Inbox columns (messageCount is never written)');
+    assert.match(sb.mock.logRows().find((r) => r.fn === 'captureInbox').message, /gmail 0, chat 1 \(mode api\), 8 chat message\(s\)/);
+    // Run again: nothing new, no row.
+    assert.deepEqual(sb.gs.runCaptureNow_(), { gmail: 0, chat: 0, chatMessages: 0, chatMode: 'api', errors: [] });
+    assert.equal(chatRows(sb).length, 1);
+  }, { now: WEEKDAY_NOW });
+
+  await t.test('Chat: the first live run replayed — noise dropped, useful kept, a noise-only DM gives no row', (sb, assert) => {
+    const live = buildLiveReplay({ now: WEEKDAY_NOW });
+    useChatServer(sb, live);
+    const result = sb.gs.runCaptureNow_();
+    assert.deepEqual(result, { gmail: 0, chat: 2, chatMessages: 3, chatMode: 'api', errors: [] }, '2 conversations instead of 28 rows');
+    const rows = chatRows(sb);
+    assert.deepEqual(rows.map((r) => r.subject), ['Direct message', 'Direct message']);
+    const hana = rows.find((r) => r.link === 'https://chat.google.com/dm/DMHANA');
+    assert.equal(hana.from, 'Hana Saleh <hana.saleh@aisa.sch.ae>');
+    assert.equal(hana.snippet, 'Hana: Please can you come to room 216');
+    const hanaRequest = live.messages['spaces/DMHANA'].find((m) => m.text === 'Please can you come to room 216');
+    assert.equal(hana.sourceKey, 'chat:' + hanaRequest.name, 'key = the newest SHOWN message, not the noise that came after it');
+    const omar = rows.find((r) => r.link === 'https://chat.google.com/dm/DMOMAR');
+    assert.equal(omar.from, 'Omar Haddad <omar@aisa.sch.ae>');
+    assert.equal(omar.snippet, 'Omar: ' + live.texts.useful[1] + ' · Omar: ' + live.texts.useful[2]);
+    assert.ok(!rows.some((r) => r.link === 'https://chat.google.com/dm/DMREEM'), 'a conversation of only noise produces no row');
+    // Every shown line is a useful text; no noise text is shown anywhere.
+    const shown = rows.map((r) => r.snippet.split(' · ').map((line) => line.replace(/^[^:]+: /, ''))).reduce((a, b) => a.concat(b), []);
+    assert.deepEqual(shown.slice().sort(), live.texts.useful.slice().sort());
+    live.texts.noise.forEach((text) => assert.ok(shown.indexOf(text) < 0, 'not shown: ' + JSON.stringify(text)));
+    // Next run: the noise after Hana's request is looked at again and dropped again.
+    assert.equal(sb.gs.runCaptureNow_().chat, 0);
+    assert.equal(chatRows(sb).length, 2);
+  }, { now: WEEKDAY_NOW });
+
+  await t.test('Chat: incremental capture — the next run shows only what came after the last captured message', (sb, assert) => {
+    const S = 'spaces/DMINC';
+    const server = buildChatServer({ spaces: [dmSpace('DMINC')], messages: { [S]: [
+      chatMsg(S, 'm1.m1', OMAR, 10, 'Can you cover my Grade 8 class on Thursday?'),
+      chatMsg(S, 'm2.m2', ME, 9.5, 'Yes'),
+      chatMsg(S, 'm3.m3', OMAR, 9, 'Thanks!'),
+      chatMsg(S, 'm4.m4', OMAR, 8, 'The lesson plan is in the shared folder')
+    ] } });
+    useChatServer(sb, server);
+    let result = sb.gs.runCaptureNow_();
+    assert.deepEqual(result, { gmail: 0, chat: 1, chatMessages: 2, chatMode: 'api', errors: [] });
+    assert.equal(chatRows(sb)[0].snippet, 'Omar: Can you cover my Grade 8 class on Thursday? · Omar: The lesson plan is in the shared folder');
+    assert.equal(chatRows(sb)[0].sourceKey, 'chat:' + S + '/messages/m4.m4');
+    // Two new substantive messages arrive, with noise and my own reply between them.
+    server.messages[S].push(
+      chatMsg(S, 'm5.m5', OMAR, 3, 'ok'),
+      chatMsg(S, 'm6.m6', OMAR, 2, 'They are working on the poster project'),
+      chatMsg(S, 'm7.m7', ME, 1.5, 'Got it'),
+      chatMsg(S, 'm8.m8', OMAR, 1, 'Could you also collect their worksheets?'));
+    result = sb.gs.runCaptureNow_();
+    assert.deepEqual(result, { gmail: 0, chat: 1, chatMessages: 2, chatMode: 'api', errors: [] });
+    const rows = chatRows(sb);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[1].snippet, 'Omar: They are working on the poster project · Omar: Could you also collect their worksheets?', 'only the two new messages');
+    assert.equal(rows[1].sourceKey, 'chat:' + S + '/messages/m8.m8');
+    assert.equal(rows[1].from, 'Omar Haddad <omar@aisa.sch.ae>');
+    // Nothing new → no row; new noise only → no row.
+    assert.deepEqual(sb.gs.runCaptureNow_(), { gmail: 0, chat: 0, chatMessages: 0, chatMode: 'api', errors: [] });
+    server.messages[S].push(chatMsg(S, 'm9.m9', OMAR, 0.5, 'Thank you 🙏'));
+    assert.equal(sb.gs.runCaptureNow_().chat, 0);
+    assert.equal(chatRows(sb).length, 2);
+    // Pure: the same decision straight from chatNewMessages.
+    const me = new Set(['bbaki@aisa.sch.ae']);
+    const keys = new Set(['chat:' + S + '/messages/m4.m4']);
+    const picked = sb.gs.chatNewMessages(server.messages[S], server.spaces[0], me, keys).map((m) => m.name);
+    assert.deepEqual(picked, [S + '/messages/m6.m6', S + '/messages/m8.m8']);
+    assert.deepEqual(sb.gs.chatNewMessages(server.messages[S], server.spaces[0], me, new Set()).map((m) => m.name),
+      [S + '/messages/m1.m1', S + '/messages/m4.m4', S + '/messages/m6.m6', S + '/messages/m8.m8'], 'nothing known → the whole window');
+  }, { now: WEEKDAY_NOW });
+
+  await t.test('Chat: backward compatible with the per-message rows of the first live run (Inbox and task-tab keys)', (sb, assert) => {
+    const live = buildLiveReplay({ now: WEEKDAY_NOW });
+    useChatServer(sb, live);
+    // The first live run wrote one row per wanted message. Seed those keys (mixed statuses); the
+    // newest DMOMAR message was promoted to a Work task and only lives on in the Work tab here.
+    const ib = live.messages['spaces/DMOMAR'].find((m) => m.text === live.texts.useful[2]);
+    const statuses = ['New', 'Ignored', 'Promoted'];
+    const seeded = [];
+    Object.keys(live.messages).forEach((space) => {
+      live.messages[space].filter((m) => m.sender.email !== ME.email && m !== ib).forEach((m) => {
+        seeded.push(perMessageRow('I-live' + String(seeded.length).padStart(4, '0'), m, statuses[seeded.length % 3]));
+      });
+    });
+    sb.mock.seed('Inbox', seeded);
+    sb.gs.addTask_({ category: 'Work', title: 'Check IB tutorial times', sourceKey: 'chat:' + ib.name, source: 'Chat' });
+    const before = sb.gs.readRows('Inbox').length;
+    assert.deepEqual(sb.gs.runCaptureNow_(), { gmail: 0, chat: 0, chatMessages: 0, chatMode: 'api', errors: [] }, 'nothing is captured again');
+    assert.equal(sb.gs.readRows('Inbox').length, before);
+    // Pure: every message key known → nothing for any space.
+    const allKeys = new Set();
+    Object.keys(live.messages).forEach((space) => live.messages[space].forEach((m) => allKeys.add('chat:' + m.name)));
+    live.spaces.forEach((space) => assert.deepEqual(sb.gs.chatNewMessages(live.messages[space.name], space, new Set([ME.email]), allKeys), []));
+    // A new message after the old rows: only it is captured.
+    const fresh = chatMsg('spaces/DMOMAR', 'new1.new1', live.users.omar, 0.5, 'Can you send me the tutorial timetable for the IB group?');
+    live.messages['spaces/DMOMAR'].push(fresh);
+    assert.deepEqual(sb.gs.runCaptureNow_(), { gmail: 0, chat: 1, chatMessages: 1, chatMode: 'api', errors: [] });
+    const row = sb.gs.readRows('Inbox').slice(-1)[0];
+    assert.equal(row.snippet, 'Omar: Can you send me the tutorial timetable for the IB group?');
+    assert.equal(row.sourceKey, 'chat:spaces/DMOMAR/messages/new1.new1');
+  }, { now: WEEKDAY_NOW });
+
+  await t.test('Chat: a long conversation keeps the NEWEST text in a snippet of at most 400 characters', (sb, assert) => {
+    const S = 'spaces/DMLONG';
+    const texts = [1, 2, 3, 4, 5, 6].map((i) => 'Note ' + i + ': the Grade ' + (i + 4) + ' science fair needs another judge, a projector and two extension cables in the hall by Thursday');
+    const server = buildChatServer({ spaces: [dmSpace('DMLONG')], messages: { [S]: texts.map((text, i) => chatMsg(S, 'l' + i + '.l' + i, SARA, 8 - i, text)) } });
+    useChatServer(sb, server);
+    assert.deepEqual(sb.gs.runCaptureNow_(), { gmail: 0, chat: 1, chatMessages: 6, chatMode: 'api', errors: [] });
+    const row = chatRows(sb)[0];
+    const full = texts.map((text) => 'Sara: ' + text).join(' · ');
+    assert.ok(full.length > 400);
+    assert.ok(row.snippet.length <= 400, 'length ' + row.snippet.length);
+    assert.equal(row.snippet, '… ' + full.slice(full.length - 398).replace(/^\s+/, ''));
+    assert.ok(row.snippet.endsWith('Sara: ' + texts[5]), 'ends with the newest message in full');
+    assert.ok(!row.snippet.includes('Note 1:') && !row.snippet.includes('Note 2:'), 'the oldest text is what gets cut');
+    assert.equal(row.sourceKey, 'chat:' + S + '/messages/l5.l5');
+    // Never cuts an emoji in half: with the suffix the cut lands on the second half of a pair.
+    ['', 'x'].forEach((suffix) => {
+      const r = sb.gs.chatConversationToInbox([chatMsg(S, 'e.e', SARA, 1, '😀'.repeat(300) + suffix)], dmSpace('DMLONG'));
+      assert.ok(r.snippet.length <= 400 && r.snippet.indexOf('… ') === 0);
+      assert.ok(!/^… [\uDC00-\uDFFF]/.test(r.snippet), 'no lone low surrogate after the ellipsis (suffix ' + JSON.stringify(suffix) + ')');
+      assert.ok(r.snippet.endsWith('😀' + suffix));
+    });
+  }, { now: WEEKDAY_NOW });
+
+  await t.test('Chat: group chats — "Group chat" or the name, distinct senders in order, bots and me left out', (sb, assert) => {
+    const G = 'spaces/GRPX';
+    const N = 'spaces/GRPN';
+    const linaNoEmail = { name: 'users/7', displayName: 'Lina Park', type: 'HUMAN' };
+    const emailOnly = { name: 'users/8', email: 'k.ali@aisa.sch.ae', type: 'HUMAN' };
+    const server = buildChatServer({
+      spaces: [
+        { name: G, spaceType: 'GROUP_CHAT', lastActiveTime: hoursBefore(3) },
+        { name: N, spaceType: 'GROUP_CHAT', displayName: 'Grade 9 team', lastActiveTime: hoursBefore(2), spaceUri: 'https://chat.google.com/room/GRPN' }
+      ],
+      messages: {
+        [G]: [
+          chatMsg(G, 'g1.g1', OMAR, 5, 'Who can supervise the Friday assembly?'),
+          chatMsg(G, 'g2.g2', LINA, 4.5, 'I can do the first half of it'),
+          chatMsg(G, 'g3.g3', ME, 4, 'I will take the second half'),
+          chatMsg(G, 'g4.g4', BOT, 3.9, 'Reminder: the assembly starts at 8:00 in the main hall'),
+          chatMsg(G, 'g5.g5', OMAR, 3.8, 'Great, Brandon please confirm with Ms Huda'),
+          chatMsg(G, 'g6.g6', LINA, 3.7, 'ok')
+        ],
+        [N]: [
+          chatMsg(N, 'n1.n1', linaNoEmail, 3, 'Can someone print the reports?'),
+          chatMsg(N, 'n2.n2', emailOnly, 2.5, 'The printer on floor 2 is broken again')
+        ]
+      }
+    });
+    useChatServer(sb, server);
+    assert.deepEqual(sb.gs.runCaptureNow_(), { gmail: 0, chat: 2, chatMessages: 5, chatMode: 'api', errors: [] });
+    const rows = chatRows(sb);
+    assert.equal(rows[0].subject, 'Group chat');
+    assert.equal(rows[0].from, 'Omar Haddad <omar@aisa.sch.ae>, Lina Park', 'distinct names in order of appearance; the first sender keeps the email');
+    assert.equal(rows[0].snippet, 'Omar: Who can supervise the Friday assembly? · Lina: I can do the first half of it · Omar: Great, Brandon please confirm with Ms Huda');
+    assert.equal(rows[0].sourceKey, 'chat:' + G + '/messages/g5.g5');
+    assert.equal(rows[0].link, 'https://mail.google.com/chat/u/0/#chat/space/GRPX');
+    assert.equal(rows[1].subject, 'Grade 9 team', 'a named group chat keeps its name');
+    assert.equal(rows[1].from, 'Lina Park, k.ali@aisa.sch.ae', 'no email to show for the first sender; a sender without a name shows the address');
+    assert.equal(rows[1].snippet, 'Lina: Can someone print the reports? · k.ali: The printer on floor 2 is broken again');
+    assert.equal(rows[1].link, 'https://chat.google.com/room/GRPN');
+  }, { now: WEEKDAY_NOW });
+
+  await t.test('Chat: a SPACE shows only messages that @mention me, and the mention alone does not make a message substantive', (sb, assert) => {
+    const R = 'spaces/ROOMX';
+    const mentionOther = { type: 'USER_MENTION', length: 5, userMention: { user: { name: 'users/2', email: 'omar@aisa.sch.ae', type: 'HUMAN' }, type: 'MENTION' } };
+    const server = buildChatServer({
+      spaces: [{ name: R, spaceType: 'SPACE', displayName: 'Grade 10 Design team', lastActiveTime: hoursBefore(2), spaceUri: 'https://chat.google.com/room/ROOMX' }],
+      messages: { [R]: [
+        chatMsg(R, 'x1.x1', MAYA, 6, 'The rubric draft is ready for everyone to review'),
+        chatMsg(R, 'x2.x2', NADIA, 5, '@Brandon Abaki ok', { annotations: [MENTION_ME] }),
+        chatMsg(R, 'x3.x3', NADIA, 4.5, '@Brandon Abaki thank you!', { annotations: [{ type: 'USER_MENTION', userMention: MENTION_ME.userMention }] }),
+        chatMsg(R, 'x4.x4', MAYA, 4, '@Brandon Abaki please book the design lab for the Grade 10 showcase', { annotations: [MENTION_ME] }),
+        chatMsg(R, 'x5.x5', NADIA, 3, '@Omar can you check?', { annotations: [mentionOther] }),
+        chatMsg(R, 'x6.x6', MAYA, 2, 'Thanks all, see you tomorrow at the showcase planning meeting')
+      ] }
+    });
+    useChatServer(sb, server);
+    assert.deepEqual(sb.gs.runCaptureNow_(), { gmail: 0, chat: 1, chatMessages: 1, chatMode: 'api', errors: [] });
+    const row = chatRows(sb)[0];
+    assert.equal(row.subject, 'Grade 10 Design team');
+    assert.equal(row.from, 'Maya Lin <maya.lin@aisa.sch.ae>');
+    assert.equal(row.snippet, 'Maya: @Brandon Abaki please book the design lab for the Grade 10 showcase', 'the snippet keeps the mention text');
+    assert.equal(row.sourceKey, 'chat:' + R + '/messages/x4.x4');
+    assert.equal(sb.gs.runCaptureNow_().chat, 0, 'later chatter without a mention is new but never wanted');
+  }, { now: WEEKDAY_NOW });
 
   await t.test('Chat 403 → CHAT_API_BLOCKED log, email mode, notification fixture parsed', (sb, assert) => {
     const chat = buildChatFixture({ now: WEEKDAY_NOW, mode: 'forbidden' });
@@ -241,7 +510,7 @@ module.exports = async function (t) {
     setupGmail(sb, [chatEmailThread()]);
     seedKnownRows(sb);
     const result = sb.gs.runCaptureNow_();
-    assert.deepEqual(result, { gmail: 3, chat: 1, chatMode: 'email', errors: [] });
+    assert.deepEqual(result, { gmail: 3, chat: 1, chatMessages: 1, chatMode: 'email', errors: [] }, 'an email-fallback row is one message');
     const warn = sb.mock.logRows().filter((r) => r.level === 'WARN' && /^CHAT_API_BLOCKED/.test(r.message));
     assert.equal(warn.length, 1, 'logged once');
     assert.match(warn[0].message, /HTTP 403/);
@@ -293,13 +562,13 @@ module.exports = async function (t) {
     sb.mock.urlFetch.handler = once.handler;
     sb.mock.gmail.setThreads([]);
     let result = sb.gs.runCaptureNow_();
-    assert.deepEqual(result, { gmail: 0, chat: 3, chatMode: 'api', errors: [] });
+    assert.deepEqual(result, { gmail: 0, chat: 3, chatMessages: 3, chatMode: 'api', errors: [] });
     assert.deepEqual(sb.mock.sleeps, [2000]);
     sb.mock.sleeps.length = 0;
     const always = buildChatFixture({ now: WEEKDAY_NOW, mode: 'rate-limit-always' });
     sb.mock.urlFetch.handler = always.handler;
     result = sb.gs.runCaptureNow_();
-    assert.deepEqual(result, { gmail: 0, chat: 0, chatMode: 'api', errors: [] });
+    assert.deepEqual(result, { gmail: 0, chat: 0, chatMessages: 0, chatMode: 'api', errors: [] });
     assert.deepEqual(sb.mock.sleeps, [2000]);
     assert.ok(sb.mock.logRows().some((r) => r.level === 'WARN' && /429/.test(r.message)));
     assert.ok(!sb.mock.logRows().some((r) => /CHAT_API_BLOCKED/.test(r.message)));
@@ -315,14 +584,14 @@ module.exports = async function (t) {
     sb.mock.seed('Config', [['CHAT_ENABLED', 'FALSE', '']]);
     sb.mock.gmail.setThreads([]);
     const r = sb.gs.captureInbox();
-    assert.deepEqual(r, { gmail: 0, chat: 0, chatMode: 'off', errors: [], skipped: true });
+    assert.deepEqual(r, { gmail: 0, chat: 0, chatMessages: 0, chatMode: 'off', errors: [], skipped: true });
     assert.equal(sb.mock.gmail.searches.length, 0);
     assert.equal(sb.mock.urlFetch.calls.length, 0);
     const info = sb.mock.logRows().find((r2) => r2.fn === 'captureInbox');
     assert.equal(info.level, 'INFO');
     assert.match(info.message, /Weekend \(2026-10-10\)/);
     const now = sb.gs.runCaptureNow_();
-    assert.deepEqual(now, { gmail: 0, chat: 0, chatMode: 'off', errors: [] });
+    assert.deepEqual(now, { gmail: 0, chat: 0, chatMessages: 0, chatMode: 'off', errors: [] });
     assert.equal(sb.mock.gmail.searches.length, 1, 'runCaptureNow bypasses the guard');
     assert.equal(sb.mock.urlFetch.calls.length, 0, 'Chat off');
   }, { now: WEEKEND_NOW });

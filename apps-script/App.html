@@ -794,7 +794,8 @@ function runCapture() {
   api('runCaptureNow', {}).then(function (r) {
     r = r || {};
     state.inbox.chatMode = r.chatMode || '';
-    var msg = 'Captured ' + (r.gmail || 0) + ' from Gmail and ' + (r.chat || 0) + ' from Chat' + (r.chatMode ? ' (Chat mode: ' + r.chatMode + ')' : '');
+    var chats = r.chat || 0;
+    var msg = 'Captured: Gmail ' + (r.gmail || 0) + ' · Chat ' + chats + ' conversation' + (chats === 1 ? '' : 's') + (r.chatMode ? ' (Chat mode: ' + r.chatMode + ')' : '');
     var errors = r.errors || [];
     toast(errors.length ? msg + ' · ' + errors.length + ' error' + (errors.length > 1 ? 's' : '') + ': ' + errors.join('; ') : msg, { type: errors.length ? 'error' : 'ok', timeout: 8000 });
     state.loaded.inbox = false; loadInbox();

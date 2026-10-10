@@ -35,10 +35,29 @@ function guard() {
   if (!email) {
     try { email = str(Session.getEffectiveUser().getEmail()).trim(); } catch (e) { email = ''; }
   }
-  if (!email) throw userError('Not allowed');
+  if (!email) {
+    guardExplain_('Google returned no email address for this run, so it cannot be checked against Config ' +
+      'ALLOWED_EMAILS. Usually the project was pushed without this repo\'s manifest: run ' +
+      '"git checkout -- apps-script/appsscript.json" and "clasp push -f", reload the editor and run again.');
+    throw userError('Not allowed');
+  }
   const allowed = readConfig().ALLOWED_EMAILS.map((a) => String(a).trim().toLowerCase()).filter(Boolean);
-  if (!allowed.includes(email.toLowerCase())) throw userError('Not allowed');
+  if (!allowed.includes(email.toLowerCase())) {
+    guardExplain_('this run is signed in as ' + email + ', which is not in Config ALLOWED_EMAILS (' +
+      allowed.join(', ') + '). The script must belong to and run as the work account: check ' +
+      '"clasp show-authorized-user" and the account menu in the editor. Only add ' + email +
+      ' to ALLOWED_EMAILS in the Config tab if it really is one of your accounts.');
+    throw userError('Not allowed');
+  }
   return email;
+}
+
+/**
+ * Writes why guard() refused to the execution log (the Apps Script editor shows it above the
+ * error). The thrown message stays the short "Not allowed" the web page shows.
+ */
+function guardExplain_(reason) {
+  try { Logger.log('guard: Not allowed because ' + reason); } catch (e) { /* ignore */ }
 }
 
 /** Recursively converts a value into something google.script.run can return. */

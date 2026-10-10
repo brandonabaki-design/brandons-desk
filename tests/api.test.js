@@ -10,6 +10,8 @@ module.exports = async function (t) {
     assert.equal(sb.gs.guard(), 'BBaki@AISA.sch.ae', 'case-insensitive, trimmed');
     sb.mock.session.activeEmail = 'intruder@example.com';
     assert.throws(() => sb.gs.guard(), /^Error: Not allowed$/);
+    assert.ok(sb.mock.loggerLines().some((l) => /guard: Not allowed because this run is signed in as intruder@example\.com, which is not in Config ALLOWED_EMAILS \(bbaki@aisa\.sch\.ae, brandon\.abaki@gmail\.com\)/.test(l)),
+      'the editor log names the account guard() saw and the allowed list');
     sb.mock.session.activeEmail = '';
     sb.mock.session.effectiveEmail = 'brandon.abaki@gmail.com';
     assert.equal(sb.gs.guard(), 'brandon.abaki@gmail.com', 'falls back to the effective user');
@@ -17,6 +19,8 @@ module.exports = async function (t) {
     assert.throws(() => sb.gs.guard(), /Not allowed/);
     sb.mock.session.effectiveEmail = '';
     assert.throws(() => sb.gs.guard(), /Not allowed/, 'blank on both');
+    assert.ok(sb.mock.loggerLines().some((l) => /guard: Not allowed because Google returned no email address/.test(l)),
+      'the editor log explains a blank email');
     sb.mock.session.activeEmail = null;
     sb.mock.session.effectiveEmail = null;
     assert.throws(() => sb.gs.guard(), /Not allowed/);

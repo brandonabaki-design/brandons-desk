@@ -702,6 +702,7 @@ function createMock(options) {
   state.setRichText = (tab, row, col, label, url, id) => { state.sheet(tab, id).setRichText_(row, col, label, url); };
   state.richText = (tab, row, col, id) => state.sheet(tab, id).getRichUrl_(row, col);
   state.logRows = (id) => state.rows('Log', id).map((r) => ({ time: r[0], fn: r[1], level: r[2], message: r[3] }));
+  state.loggerLines = () => state.logs.slice();
   // Threads built through the mock count their per-thread getMessages() calls.
   const makeCountedThread = (spec) => {
     const thread = makeThread(spec);

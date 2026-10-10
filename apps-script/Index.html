@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- The viewport meta tag is added server-side with HtmlOutput.addMetaTag (HtmlService strips one written here). -->
+  <title>Brandon's Desk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+  <?!= include('Styles') ?>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Brandon's Desk</div>
+      <nav class="tabs" id="tabs" aria-label="Pages">
+        <a href="#today" data-page="today">Today <span class="count" data-count="today" hidden></span></a>
+        <a href="#inbox" data-page="inbox">Inbox <span class="count" data-count="inbox" hidden></span></a>
+        <a href="#import" data-page="import">Import</a>
+        <a href="#agenda" data-page="agenda">Agenda</a>
+        <a href="#newsletter" data-page="newsletter"><span>News<span class="tab-long">letter</span></span></a>
+        <a href="#history" data-page="history">History</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" class="main">
+    <div id="loading" class="loading" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <div>Loading your desk…</div>
+    </div>
+    <div id="boot-error" class="boot-error" hidden>
+      <h2>Couldn't load</h2>
+      <p id="boot-error-text"></p>
+      <button type="button" class="btn primary" id="boot-retry">Try again</button>
+    </div>
+
+    <!-- 1. Today -->
+    <section id="page-today" class="page" hidden>
+      <form class="quickadd" id="quickadd" autocomplete="off">
+        <input type="text" id="qa-title" class="input" placeholder="Add a task and press Enter" maxlength="140" aria-label="New task title">
+        <div class="seg" id="qa-category" role="radiogroup" aria-label="Category">
+          <button type="button" class="seg-btn" role="radio" aria-checked="false" data-value="Work">Work</button>
+          <button type="button" class="seg-btn" role="radio" aria-checked="false" data-value="Personal">Personal</button>
+        </div>
+        <button type="submit" class="btn primary" id="qa-add">Add</button>
+      </form>
+      <div class="toolbar">
+        <input type="search" id="today-search" class="input" placeholder="Search tasks" aria-label="Search tasks">
+        <span class="muted" id="today-date"></span>
+      </div>
+      <div class="columns">
+        <div class="column" id="col-work" data-category="Work"></div>
+        <div class="column" id="col-personal" data-category="Personal"></div>
+      </div>
+    </section>
+
+    <!-- 2. Inbox -->
+    <section id="page-inbox" class="page" hidden>
+      <div class="toolbar">
+        <select id="inbox-status" class="input select" aria-label="Inbox status">
+          <option value="New">New</option>
+          <option value="Promoted">Promoted</option>
+          <option value="Ignored">Ignored</option>
+        </select>
+        <span class="grow"></span>
+        <button type="button" class="btn" id="inbox-refresh">Refresh</button>
+        <button type="button" class="btn primary" id="inbox-capture">Run capture now</button>
+      </div>
+      <p class="notice" id="inbox-chatmode" hidden></p>
+      <div id="inbox-list" class="list"></div>
+    </section>
+
+    <!-- 3. Import -->
+    <section id="page-import" class="page" hidden>
+      <div class="grid-2">
+        <div class="card">
+          <label class="label" for="import-text">Paste a list</label>
+          <textarea id="import-text" class="input textarea" rows="10" placeholder="# Project name&#10;- [Work] Email the parents about the trip @2026-10-14 !&#10;- [x] Something already done&#10;[P] Buy milk"></textarea>
+          <div class="row gap wrap">
+            <label class="btn file-btn">Choose .html or .txt<input type="file" id="import-file" accept=".html,.htm,.txt"></label>
+            <span class="muted" id="import-file-info"></span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="field"><label class="label" for="import-category">Default category</label>
+            <select id="import-category" class="input select"><option>Work</option><option>Personal</option></select></div>
+          <div class="field"><label class="label" for="import-created">Created</label>
+            <input type="date" id="import-created" class="input"></div>
+          <p class="muted small">Lines starting with # set the project. [Work]/[Personal] prefixes, "- [x]" for done, "@2026-10-14" or "due: 2026-10-14" for a date, "!" for high priority.</p>
+        </div>
+      </div>
+      <div class="section-head">
+        <h2>Preview <span class="muted" id="import-preview-count"></span></h2>
+        <button type="button" class="btn primary" id="import-go" disabled>Import</button>
+      </div>
+      <div id="import-preview" class="preview"></div>
+      <div id="import-result" class="card result" hidden></div>
+    </section>
+
+    <!-- 4. Agenda -->
+    <section id="page-agenda" class="page" hidden>
+      <div class="toolbar wrap">
+        <span class="pair"><label class="label inline" for="agenda-date">Meeting</label>
+        <input type="date" id="agenda-date" class="input"></span>
+        <span class="muted" id="agenda-window"></span>
+        <span class="badge" id="agenda-state"></span>
+        <span class="grow"></span>
+        <button type="button" class="btn" id="agenda-regenerate">Regenerate draft</button>
+        <button type="button" class="btn primary" id="agenda-save">Save</button>
+      </div>
+      <div class="toolbar wrap">
+        <span class="muted" id="agenda-director"></span>
+        <span class="grow"></span>
+        <button type="button" class="btn" id="agenda-copy">Copy as text</button>
+        <button type="button" class="btn" id="agenda-download">Download .xlsx</button>
+      </div>
+      <div id="agenda-sections" class="agenda"></div>
+    </section>
+
+    <!-- 5. Newsletter -->
+    <section id="page-newsletter" class="page" hidden>
+      <div class="toolbar wrap">
+        <span class="pair"><label class="label inline" for="nl-from">From</label><input type="date" id="nl-from" class="input"></span>
+        <span class="pair"><label class="label inline" for="nl-to">To</label><input type="date" id="nl-to" class="input"></span>
+        <button type="button" class="btn" id="nl-apply">Apply</button>
+        <span class="grow"></span>
+        <button type="button" class="btn" id="nl-copy">Copy as Markdown</button>
+        <button type="button" class="btn" id="nl-download">Download .xlsx</button>
+      </div>
+      <div id="nl-list" class="list"></div>
+      <details class="card" id="nl-md-wrap"><summary>Markdown preview</summary><pre id="nl-markdown" class="pre"></pre></details>
+    </section>
+
+    <!-- 6. History -->
+    <section id="page-history" class="page" hidden>
+      <form class="toolbar wrap" id="history-filters">
+        <select id="h-category" class="input select" aria-label="Category"><option value="">Both lists</option><option>Work</option><option>Personal</option></select>
+        <select id="h-status" class="input select" aria-label="Status"><option>Done</option><option>Dropped</option></select>
+        <input type="date" id="h-from" class="input" aria-label="From">
+        <input type="date" id="h-to" class="input" aria-label="To">
+        <input type="search" id="h-search" class="input" placeholder="Search" aria-label="Search">
+        <button type="submit" class="btn primary">Apply</button>
+      </form>
+      <div id="history-list" class="list"></div>
+    </section>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous" defer onload="window.__xlsxLoaded = true" onerror="window.__xlsxFailed = true"></script>
+  <?!= include('App') ?>
+</body>
+</html>

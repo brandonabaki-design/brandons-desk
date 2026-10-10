@@ -1,0 +1,135 @@
+[
+  {
+    "id": "thread-ask",
+    "subject": "Lab timetable for next week",
+    "messages": [
+      {
+        "id": "msg-ask-1",
+        "from": "Sara Khan <sara.khan@aisa.sch.ae>",
+        "to": "bbaki@aisa.sch.ae",
+        "subject": "Lab timetable for next week",
+        "date": "2026-10-09T05:00:00Z",
+        "body": "Hi Brandon,\n\nCould you send me the ICT lab timetable for next week by Thursday?\n\nThanks,\nSara\n\nOn Thu, Oct 8, 2026 at 9:00 AM Brandon Abaki <bbaki@aisa.sch.ae> wrote:\n> Sure, I will check.\n> Brandon"
+      }
+    ]
+  },
+  {
+    "id": "thread-replied",
+    "subject": "Robotics club budget",
+    "messages": [
+      { "id": "msg-replied-1", "from": "Omar Haddad <omar@aisa.sch.ae>", "subject": "Robotics club budget", "body": "Can you confirm the budget?" },
+      { "id": "msg-replied-2", "from": "Brandon Abaki <bbaki@aisa.sch.ae>", "subject": "Re: Robotics club budget", "body": "Confirmed, 2000 AED." }
+    ]
+  },
+  {
+    "id": "thread-alias-replied",
+    "subject": "Parent meeting",
+    "messages": [
+      { "id": "msg-alias-1", "from": "Parent <parent@example.com>", "subject": "Parent meeting", "body": "When can we meet?" },
+      { "id": "msg-alias-2", "from": "B. Abaki <brandon.abaki@aisa.sch.ae>", "subject": "Re: Parent meeting", "body": "Tuesday works." }
+    ]
+  },
+  {
+    "id": "thread-draft",
+    "subject": "Field trip forms",
+    "messages": [
+      { "id": "msg-draft-1", "from": "Nadia <nadia@aisa.sch.ae>", "subject": "Field trip forms", "body": "Forms attached, please sign." },
+      { "id": "msg-draft-2", "from": "Brandon Abaki <bbaki@aisa.sch.ae>", "subject": "Re: Field trip forms", "body": "(draft)", "draft": true }
+    ]
+  },
+  {
+    "id": "thread-draft-then-reply",
+    "subject": "Cover request",
+    "messages": [
+      { "id": "msg-dtr-1", "from": "Nadia <nadia@aisa.sch.ae>", "subject": "Cover request", "body": "Can you cover period 3?" },
+      { "id": "msg-dtr-2", "from": "Brandon Abaki <bbaki@aisa.sch.ae>", "subject": "Re: Cover request", "body": "(draft)", "draft": true },
+      { "id": "msg-dtr-3", "from": "Nadia <nadia@aisa.sch.ae>", "subject": "Re: Cover request", "body": "Any news?" }
+    ]
+  },
+  {
+    "id": "thread-calendar",
+    "subject": "Invitation: Staff meeting",
+    "messages": [
+      { "id": "msg-cal-1", "from": "Google Calendar <calendar-notification@google.com>", "subject": "Invitation: Staff meeting", "body": "You have been invited." }
+    ]
+  },
+  {
+    "id": "thread-list",
+    "subject": "Weekly EdTech digest",
+    "messages": [
+      { "id": "msg-list-1", "from": "EdTech Weekly <digest@edtechweekly.example.com>", "subject": "Weekly EdTech digest", "body": "This week in EdTech...", "headers": { "List-Unsubscribe": "<mailto:unsub@edtechweekly.example.com>" } }
+    ]
+  },
+  {
+    "id": "thread-bulk",
+    "subject": "Important announcement",
+    "messages": [
+      { "id": "msg-bulk-1", "from": "HR Team <hr@aisa.sch.ae>", "subject": "Important announcement", "body": "All staff...", "headers": { "Precedence": "bulk" } }
+    ]
+  },
+  {
+    "id": "thread-auto",
+    "subject": "Out of office",
+    "messages": [
+      { "id": "msg-auto-1", "from": "Leila <leila@aisa.sch.ae>", "subject": "Out of office", "body": "I am away.", "headers": { "Auto-Submitted": "auto-replied" } }
+    ]
+  },
+  {
+    "id": "thread-listid",
+    "subject": "[staff] Reminder",
+    "messages": [
+      { "id": "msg-listid-1", "from": "Staff list <staff@aisa.sch.ae>", "subject": "[staff] Reminder", "body": "Reminder for all.", "headers": { "List-Id": "staff.aisa.sch.ae" } }
+    ]
+  },
+  {
+    "id": "thread-auto-last",
+    "subject": "Timetable question",
+    "messages": [
+      { "id": "msg-al-1", "from": "Leila <leila@aisa.sch.ae>", "subject": "Timetable question", "body": "Can you check the timetable?" },
+      { "id": "msg-al-2", "from": "Leila <leila@aisa.sch.ae>", "subject": "Automatic reply: Timetable question", "body": "I am away.", "headers": { "Auto-Submitted": "auto-replied" } }
+    ]
+  },
+  {
+    "id": "thread-list-then-human",
+    "subject": "[staff] Lab rota",
+    "messages": [
+      { "id": "msg-lh-1", "from": "Staff list <staff@aisa.sch.ae>", "subject": "[staff] Lab rota", "body": "Rota attached.", "headers": { "List-Id": "staff.aisa.sch.ae" } },
+      { "id": "msg-lh-2", "from": "Omar Haddad <omar@aisa.sch.ae>", "subject": "Re: [staff] Lab rota", "body": "Brandon, can you swap Tuesday?" }
+    ]
+  },
+  {
+    "id": "thread-known-personal",
+    "subject": "Already a personal task",
+    "messages": [
+      { "id": "msg-known-personal-1", "from": "Mum <mum@example.com>", "subject": "Already a personal task", "body": "Already tracked in Personal." }
+    ]
+  },
+  {
+    "id": "thread-known-inbox",
+    "subject": "Already captured",
+    "messages": [
+      { "id": "msg-known-inbox-1", "from": "Hana <hana@aisa.sch.ae>", "subject": "Already captured", "body": "This one is already in the Inbox tab." }
+    ]
+  },
+  {
+    "id": "thread-known-task",
+    "subject": "Already a task",
+    "messages": [
+      { "id": "msg-known-task-1", "from": "Yusuf <yusuf@aisa.sch.ae>", "subject": "Already a task", "body": "This one is already a Work task." },
+      { "id": "msg-known-task-2", "from": "Yusuf <yusuf@aisa.sch.ae>", "subject": "Re: Already a task", "body": "Bump." }
+    ]
+  },
+  {
+    "id": "thread-second",
+    "subject": "Grade 9 AI workshop slides",
+    "messages": [
+      { "id": "msg-second-1", "from": "Brandon Abaki <bbaki@aisa.sch.ae>", "subject": "Grade 9 AI workshop slides", "body": "Here are the slides." },
+      { "id": "msg-second-2", "from": "Maya Lin <maya.lin@aisa.sch.ae>", "subject": "Re: Grade 9 AI workshop slides", "body": "Thanks! Could you add a slide on Gemini?\n> Here are the slides.", "headers": { "Auto-Submitted": "no" } }
+    ]
+  },
+  {
+    "id": "thread-empty",
+    "subject": "Empty thread",
+    "messages": []
+  }
+]

@@ -1,0 +1,1163 @@
+<script>
+/* pure:start */
+/* Pure helpers: no DOM, no google.*, no clock. tests/run.js evals this block in Node. ES2019 only. */
+var CATEGORIES = ['Work', 'Personal'];
+var AGENDA_SECTIONS = ['Done', 'In progress', 'Questions', 'Documents', 'Notes'];
+var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+var MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+var DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+var DAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function esc(s) {
+  var map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) { return map[c]; });
+}
+function sanitiseLink(url) {
+  var s = String(url === null || url === undefined ? '' : url).trim();
+  var lower = s.toLowerCase();
+  if (lower.indexOf('https://') === 0 || lower.indexOf('http://') === 0) return s.replace(/[\u0000-\u001f\u007f]/g, '');
+  return '';
+}
+function truncate(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n - 1).trim() + '…' : s; }
+function cleanText(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
+function normaliseTitleKey(s) {
+  return String(s || '').toLowerCase().replace(/^(re|fwd?)\s*:\s*/i, '').replace(/[^\w\sÀ-￿]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+function parseYmd(s) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
+  if (!m) return null;
+  var y = +m[1], mo = +m[2], d = +m[3];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  var dt = new Date(Date.UTC(y, mo - 1, d)); // 2026-02-30 is not a date (same rule as the server's parseDate)
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return { y: y, m: mo, d: d };
+}
+function ymdToDays(s) { var p = parseYmd(s); return p ? Math.round(Date.UTC(p.y, p.m - 1, p.d) / 86400000) : null; }
+function daysToYmd(n) { var d = new Date(n * 86400000); return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate()); }
+function addDays(ymd, n) { var d = ymdToDays(ymd); return d === null ? '' : daysToYmd(d + n); }
+function dayDiff(a, b) { var x = ymdToDays(a), y = ymdToDays(b); return (x === null || y === null) ? null : x - y; }
+function weekdayOf(ymd) { var d = ymdToDays(ymd); return d === null ? -1 : new Date(d * 86400000).getUTCDay(); }
+function formatDateLabel(ymd, today) {
+  var p = parseYmd(ymd);
+  if (!p) return '';
+  var diff = today ? dayDiff(ymd, today) : null;
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Tomorrow';
+  if (diff === -1) return 'Yesterday';
+  var label = DAYS[weekdayOf(ymd)] + ' ' + p.d + ' ' + MONTHS[p.m - 1];
+  var ty = today ? parseYmd(today) : null;
+  if (!ty || ty.y !== p.y) label += ' ' + p.y;
+  return label;
+}
+function formatDateLong(ymd) {
+  var p = parseYmd(ymd);
+  return p ? DAYS_LONG[weekdayOf(ymd)] + ' ' + p.d + ' ' + MONTHS_LONG[p.m - 1] + ' ' + p.y : '';
+}
+function formatDateTimeLabel(iso, today) {
+  var s = String(iso || '');
+  var date = formatDateLabel(s.slice(0, 10), today);
+  var m = /T(\d{2}:\d{2})/.exec(s);
+  return date ? date + (m ? ' ' + m[1] : '') : s;
+}
+function cmpStr(a, b) { a = String(a || ''); b = String(b || ''); return a < b ? -1 : a > b ? 1 : 0; }
+function taskRank(t, today) {
+  if (t.status !== 'Open') return 4;
+  var diff = t.due ? dayDiff(t.due, today) : null;
+  if (diff !== null && diff < 0) return 0;
+  if (diff === 0) return 1;
+  if (t.priority === 'High') return 2;
+  return 3;
+}
+function compareTasks(a, b, today) {
+  var ra = taskRank(a, today), rb = taskRank(b, today);
+  if (ra !== rb) return ra - rb;
+  if (ra === 0) return cmpStr(a.due, b.due) || cmpStr(b.created, a.created) || cmpStr(a.id, b.id);
+  return cmpStr(b.created, a.created) || cmpStr(a.id, b.id);
+}
+function groupTasks(tasks, today) {
+  var g = { overdue: [], dueToday: [], open: [], doneToday: [] };
+  (tasks || []).forEach(function (t) {
+    if (t.status === 'Open') {
+      var r = taskRank(t, today);
+      (r === 0 ? g.overdue : r === 1 ? g.dueToday : g.open).push(t);
+    } else if (t.status === 'Done' && String(t.done || '').slice(0, 10) === today) {
+      g.doneToday.push(t);
+    }
+  });
+  var cmp = function (a, b) { return compareTasks(a, b, today); };
+  g.overdue.sort(cmp); g.dueToday.sort(cmp); g.open.sort(cmp);
+  g.doneToday.sort(function (a, b) { return cmpStr(b.updated, a.updated) || cmpStr(a.id, b.id); });
+  return g;
+}
+function matchesSearch(t, q) {
+  q = String(q || '').toLowerCase().trim();
+  if (!q) return true;
+  return [t.title, t.details, t.note, t.project].some(function (v) { return String(v || '').toLowerCase().indexOf(q) >= 0; });
+}
+function formulaGuard(v) {
+  var s = v === null || v === undefined ? '' : String(v);
+  return /^[=+\-@]/.test(s) ? ' ' + s : s;
+}
+function csvFromRows(rows) {
+  return rows.map(function (r) {
+    return r.map(function (c) {
+      var s = formulaGuard(c);
+      return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }).join(',');
+  }).join('\r\n');
+}
+function buildAgendaWorkbookRows(agenda, opts) {
+  opts = opts || {};
+  var rows = [], links = [];
+  rows.push(['Director meeting agenda — ' + formatDateLong(agenda.meetingDate)]);
+  if (agenda.window) rows.push(['Window: ' + formatDateLong(agenda.window.from) + ' to ' + formatDateLong(agenda.window.to)]);
+  if (opts.directorName) rows.push(['Director: ' + formulaGuard(opts.directorName)]);
+  rows.push([]);
+  rows.push(['Section', 'Item', 'Detail', 'Link']);
+  AGENDA_SECTIONS.forEach(function (name) {
+    ((agenda.sections && agenda.sections[name]) || []).forEach(function (r) {
+      var link = sanitiseLink(r.link);
+      rows.push([name, formulaGuard(r.item), formulaGuard(r.detail), link]);
+      if (link) links.push({ r: rows.length - 1, c: 3, url: link });
+    });
+  });
+  return { sheetName: 'Agenda', fileName: 'agenda-' + (agenda.meetingDate || 'draft'), rows: rows, links: links,
+    cols: [{ wch: 13 }, { wch: 52 }, { wch: 52 }, { wch: 44 }] };
+}
+function agendaToText(agenda, opts) {
+  opts = opts || {};
+  var lines = ['Director meeting agenda — ' + formatDateLong(agenda.meetingDate)];
+  if (agenda.window) lines.push('Window: ' + formatDateLong(agenda.window.from) + ' to ' + formatDateLong(agenda.window.to));
+  if (opts.directorName) lines.push('Director: ' + opts.directorName);
+  AGENDA_SECTIONS.forEach(function (name) {
+    var list = (agenda.sections && agenda.sections[name]) || [];
+    if (!list.length) return;
+    lines.push('');
+    lines.push(name.toUpperCase());
+    list.forEach(function (r, i) {
+      var link = sanitiseLink(r.link);
+      lines.push((i + 1) + '. ' + cleanText(r.item) + (r.detail ? ' — ' + cleanText(r.detail) : '') + (link ? ' ' + link : ''));
+    });
+  });
+  return lines.join('\n');
+}
+function buildNewsletterWorkbookRows(tasks, range) {
+  range = range || {};
+  var rows = [], links = [];
+  rows.push(['Newsletter material' + (range.from ? ' — ' + formatDateLong(range.from) + ' to ' + formatDateLong(range.to) : '')]);
+  rows.push([]);
+  rows.push(['Project', 'Item', 'Note', 'Status', 'Done', 'Link']);
+  var sorted = (tasks || []).slice().sort(function (a, b) { return cmpStr(a.project, b.project) || cmpStr(b.done, a.done) || cmpStr(a.id, b.id); });
+  sorted.forEach(function (t) {
+    var link = sanitiseLink(t.link);
+    rows.push([formulaGuard(t.project), formulaGuard(t.title), formulaGuard(t.note), t.status || '', t.done || '', link]);
+    if (link) links.push({ r: rows.length - 1, c: 5, url: link });
+  });
+  return { sheetName: 'Newsletter', fileName: 'newsletter-' + (range.to || 'material'), rows: rows, links: links,
+    cols: [{ wch: 22 }, { wch: 52 }, { wch: 40 }, { wch: 8 }, { wch: 12 }, { wch: 44 }] };
+}
+/* Import preview: same rules as SPEC.md section 6 (text). Returns [{include, category, title, project, done, due, priority, link, source, raw}]. */
+function parseImportText(text, defaultCategory) {
+  var rows = [], project = '';
+  var category0 = CATEGORIES.indexOf(defaultCategory) >= 0 ? defaultCategory : 'Work';
+  String(text || '').split(/\r?\n/).forEach(function (line) {
+    var raw = line.trim();
+    if (!raw) return;
+    if (raw.charAt(0) === '#') { project = cleanText(raw.replace(/^#+\s*/, '')); return; }
+    if (raw.length <= 2) return;
+    var s = raw, category = category0, done = false, due = '', priority = 'Normal', m, changed = true;
+    while (changed) {
+      changed = false;
+      m = /^\[(work|personal|w|p)\]\s*/i.exec(s);
+      if (m) { category = /^(work|w)$/i.test(m[1]) ? 'Work' : 'Personal'; s = s.slice(m[0].length); changed = true; }
+      m = /^(-\s*\[[xX]\]|\[[xX]\]|✓|✔|☑)\s*/.exec(s);
+      if (m) { done = true; s = s.slice(m[0].length); changed = true; }
+      m = /^([-*•☐]|\[ \])\s*/.exec(s) || /^\d{1,3}[.)]\s+/.exec(s);
+      if (m) { s = s.slice(m[0].length); changed = true; }
+    }
+    changed = true;
+    while (changed) {
+      changed = false;
+      m = /\s*(!{1,2})$/.exec(s);
+      if (m) { priority = 'High'; s = s.slice(0, m.index); changed = true; }
+      m = /\s*(?:@|due:\s*)(\d{4}-\d{2}-\d{2})$/i.exec(s);
+      if (m) { due = parseYmd(m[1]) ? m[1] : due; s = s.slice(0, m.index); changed = true; }
+    }
+    var title = cleanText(s);
+    if (!title) return;
+    rows.push({ include: true, category: category, title: title, project: project, done: done, due: due, priority: priority, link: '', source: 'text', raw: raw });
+  });
+  return rows;
+}
+/* Regenerates text for importText from edited preview rows, in preview order (so the sheet keeps the document's
+   order): a "# Project" line whenever the project changes (a bare "#" clears it, as the server reads it); every line
+   carries [Work]/[Personal], "[x]" when done, " @due" and " !" for High. */
+function previewRowsToText(rows) {
+  var lines = [], project = '';
+  (rows || []).forEach(function (r) {
+    if (!r.include || !cleanText(r.title)) return;
+    var p = cleanText(r.project);
+    if (p !== project) { lines.push(p ? '# ' + p : '#'); project = p; }
+    var line = '[' + (r.category === 'Personal' ? 'Personal' : 'Work') + '] ' + (r.done ? '[x] ' : '') + cleanText(r.title).replace(/\s*!+$/, '');
+    if (r.due && parseYmd(r.due)) line += ' @' + r.due;
+    if (r.priority === 'High') line += ' !';
+    lines.push(line);
+  });
+  return lines.join('\n');
+}
+/* pure:end */
+
+/* ---------- DOM-dependent helpers ---------- */
+/* HTML import preview: DOMParser on a detached document (scripts never run). Rules: SPEC.md section 6 (HTML). */
+function parseImportHtml(html, defaultCategory) {
+  var src = String(html || '');
+  var doc;
+  try { doc = new DOMParser().parseFromString(src, 'text/html'); } catch (e) { return parseImportText(src, defaultCategory); }
+  Array.prototype.forEach.call(doc.querySelectorAll('script,style,noscript,template,iframe,object,embed'), function (n) {
+    if (n.parentNode) n.parentNode.removeChild(n);
+  });
+  var category = CATEGORIES.indexOf(defaultCategory) >= 0 ? defaultCategory : 'Work';
+  var project = '', rows = [], lastItem = null;
+  var walker = doc.createTreeWalker(doc.body, 1, null, false);
+  var node;
+  while ((node = walker.nextNode())) {
+    var tag = node.tagName.toLowerCase();
+    if (lastItem && lastItem.contains(node) && tag !== 'li') continue;
+    var cls = node.getAttribute('class') || '';
+    if (/^h[1-4]$/.test(tag)) {
+      var heading = cleanText(node.textContent), low = heading.toLowerCase();
+      if (low.indexOf('work') >= 0 || low.indexOf('school') >= 0 || low.indexOf('aisa') >= 0) { category = 'Work'; project = ''; }
+      else if (low.indexOf('personal') >= 0 || low.indexOf('home') >= 0) { category = 'Personal'; project = ''; }
+      else if (heading) project = heading;
+      continue;
+    }
+    var isCheckbox = tag === 'input' && (node.getAttribute('type') || '').toLowerCase() === 'checkbox';
+    var isItem = tag === 'li' || isCheckbox || /task|todo/i.test(cls);
+    if (!isItem) continue;
+    if (!isCheckbox && tag !== 'li' && node.querySelector('li, input[type="checkbox"]')) continue; // a container, keep walking
+    var itemEl = node;
+    if (isCheckbox) {
+      var lab = node.closest('label');
+      if (!lab && node.id) {
+        var forId = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(node.id) : node.id.replace(/["\\]/g, '\\$&');
+        try { lab = doc.querySelector('label[for="' + forId + '"]'); } catch (e) { lab = null; } // an id with a newline is not a valid selector
+      }
+      itemEl = lab || node.parentNode || node;
+      if (lastItem && lastItem.contains(itemEl)) continue;
+    }
+    lastItem = itemEl;
+    var clone = itemEl.cloneNode(true);
+    Array.prototype.forEach.call(clone.querySelectorAll('ul,ol'), function (n) { n.parentNode.removeChild(n); });
+    var text = cleanText(clone.textContent);
+    if (!text) continue;
+    var parsed = parseImportText(text, category);
+    if (!parsed.length) continue;
+    var r = parsed[0];
+    r.project = project;
+    var cb = isCheckbox ? node : itemEl.querySelector('input[type="checkbox"]');
+    var style = itemEl.getAttribute('style') || '';
+    var classes = cls + ' ' + (itemEl.getAttribute('class') || '');
+    var struck = itemEl.querySelector('s,del,strike,[style*="line-through"]');
+    if ((cb && (cb.checked || cb.hasAttribute('checked'))) || /\b(line-through|done|completed|checked)\b/i.test(classes) ||
+        /line-through/i.test(style) || (struck && cleanText(struck.textContent) === text)) r.done = true;
+    var a = itemEl.querySelector('a[href]');
+    if (a) r.link = sanitiseLink(a.getAttribute('href'));
+    r.source = 'html';
+    rows.push(r);
+  }
+  if (rows.length) return rows;
+  return parseImportText(htmlToText(doc.body), defaultCategory);
+}
+function htmlToText(root) {
+  var out = [];
+  (function walk(n) {
+    if (n.nodeType === 3) { out.push(n.nodeValue); return; }
+    if (n.nodeType !== 1) return;
+    var block = /^(p|div|li|h[1-6]|tr|br|section|article|header|footer|ul|ol|blockquote|pre|table|dd|dt)$/i.test(n.tagName);
+    if (block) out.push('\n');
+    Array.prototype.forEach.call(n.childNodes, walk);
+    if (block) out.push('\n');
+  })(root);
+  return out.join('').replace(/[ \t]+\n/g, '\n');
+}
+
+/* ---------- state, api, DOM utilities ---------- */
+var PAGES = ['today', 'inbox', 'import', 'agenda', 'newsletter', 'history'];
+var state = {
+  booted: false, page: 'today', today: '', user: '', config: {}, projects: [], inboxNew: 0,
+  tasks: [], search: '', qaCategory: 'Work', expanded: null, noteFor: null, draft: null, doneOpen: {},
+  inbox: { status: 'New', items: [], promoting: null, chatMode: '' },
+  imp: { textRows: [], htmlRows: [], htmlName: '' },
+  agenda: null, agendaDirty: false, nl: { tasks: [], markdown: '', from: '', to: '' }, history: { tasks: [], loaded: false },
+  loaded: {}
+};
+function api(name, payload) {
+  return new Promise(function (resolve, reject) {
+    var run = (typeof google !== 'undefined' && google.script && google.script.run) ? google.script.run : null;
+    if (!run) { reject(new Error('Not connected to the server')); return; }
+    if (typeof run[name] !== 'function') { reject(new Error('Unknown server function: ' + name)); return; }
+    run.withSuccessHandler(function (r) { resolve(r); })
+      .withFailureHandler(function (e) { reject(toError(e)); })[name](payload || {});
+  });
+}
+function toError(e) {
+  if (e instanceof Error) return e;
+  return new Error(e && e.message ? e.message : (typeof e === 'string' ? e : 'Something went wrong'));
+}
+function errText(e) { return String((e && e.message) || e || 'Something went wrong').replace(/^(ScriptError|Error|Exception):\s*/, ''); }
+function $(id) { return document.getElementById(id); }
+function h(tag, attrs, children) {
+  var el = document.createElement(tag), value = null;
+  if (attrs) Object.keys(attrs).forEach(function (k) {
+    var v = attrs[k];
+    if (v === null || v === undefined || v === false) return;
+    if (k === 'class') el.className = v;
+    else if (k === 'text') el.textContent = v;
+    else if (k === 'value') value = v;
+    else if (k === 'checked' || k === 'disabled' || k === 'selected' || k === 'open' || k === 'hidden') el[k] = !!v;
+    else if (k.indexOf('on') === 0) el.addEventListener(k.slice(2), v);
+    else if (k === 'data') Object.keys(v).forEach(function (d) { el.setAttribute('data-' + d, v[d]); });
+    else el.setAttribute(k, v === true ? '' : v);
+  });
+  append(el, children);
+  if (value !== null) el.value = value;
+  return el;
+}
+function append(el, c) {
+  if (c === null || c === undefined || c === false) return;
+  if (Array.isArray(c)) { c.forEach(function (x) { append(el, x); }); return; }
+  if (typeof c === 'string' || typeof c === 'number') { el.appendChild(document.createTextNode(String(c))); return; }
+  if (c.nodeType) el.appendChild(c);
+}
+function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+function linkEl(url, label, cls) {
+  var u = sanitiseLink(url);
+  return u ? h('a', { href: u, target: '_blank', rel: 'noopener', class: cls || '', title: u }, label) : null;
+}
+function selectEl(options, value, cls) {
+  return h('select', { class: 'input select ' + (cls || ''), value: value }, options.map(function (o) { return h('option', { value: o, text: o }); }));
+}
+function checkEl(label, checked, onchange) {
+  var cb = h('input', { type: 'checkbox', checked: checked, onchange: onchange });
+  return { el: h('label', { class: 'check' }, [cb, label]), cb: cb };
+}
+var fieldSeq = 0;
+/* A labelled form control: the caption is a <label for> so screen readers announce the field's name (and a tap on it focuses the control). */
+function field(label, input, cls) {
+  if (!input.id) input.id = 'field-' + (++fieldSeq);
+  return h('div', { class: 'field ' + (cls || '') }, [h('label', { class: 'label', for: input.id, text: label }), input]);
+}
+function segEl(value, onchange) {
+  var seg = h('div', { class: 'seg', role: 'radiogroup' });
+  CATEGORIES.forEach(function (c) {
+    seg.appendChild(h('button', { type: 'button', class: 'seg-btn' + (c === value ? ' active' : ''), role: 'radio', 'aria-checked': c === value ? 'true' : 'false', data: { value: c },
+      onclick: function () {
+        Array.prototype.forEach.call(seg.children, function (b) { b.classList.toggle('active', b === this); b.setAttribute('aria-checked', b === this ? 'true' : 'false'); }, this);
+        onchange(c);
+      } }, c));
+  });
+  return seg;
+}
+function emptyEl(text) { return h('div', { class: 'empty', text: text }); }
+function toast(message, opts) {
+  opts = opts || {};
+  var box = $('toasts'), timer;
+  var el = h('div', { class: 'toast ' + (opts.type || ''), role: 'status' }, h('span', { class: 'msg', text: message }));
+  function dismiss() { clearTimeout(timer); if (el.parentNode) el.parentNode.removeChild(el); }
+  if (opts.action) el.appendChild(h('button', { type: 'button', class: 'act', onclick: function () { dismiss(); opts.action.fn(); } }, opts.action.label));
+  el.appendChild(h('button', { type: 'button', class: 'x', 'aria-label': 'Dismiss', onclick: dismiss }, '×'));
+  box.appendChild(el);
+  // Keep the stack short, but evict plain toasts first: a "Done: … Undo" toast must survive its own 10 s window
+  // when five tasks are ticked in a row. Only an unreasonable pile of undoable toasts loses its oldest one.
+  while (box.children.length > 4) {
+    var victim = null;
+    for (var i = 0; i < box.children.length - 1; i++) {
+      if (!box.children[i].querySelector('.act')) { victim = box.children[i]; break; }
+    }
+    if (!victim) { if (box.children.length > 8) victim = box.firstChild; else break; }
+    box.removeChild(victim);
+  }
+  timer = setTimeout(dismiss, opts.timeout || (opts.type === 'error' ? 8000 : 3500));
+  return { dismiss: dismiss };
+}
+function toastError(e) { toast(errText(e), { type: 'error' }); }
+function cleanPayload(o) { var out = {}; Object.keys(o).forEach(function (k) { if (o[k] !== undefined) out[k] = o[k]; }); return out; }
+
+/* ---------- navigation ---------- */
+function readHash(cb) {
+  if (typeof google !== 'undefined' && google.script && google.script.url && google.script.url.getLocation) {
+    google.script.url.getLocation(function (loc) { cb((loc && loc.hash) || ''); });
+  } else cb(location.hash.replace(/^#/, ''));
+}
+function showPage(name) {
+  if (PAGES.indexOf(name) < 0) name = 'today';
+  state.page = name;
+  // Pages stay hidden until the bootstrap succeeds, so the spinner / "Couldn't load" card is all that shows.
+  PAGES.forEach(function (p) { $('page-' + p).hidden = p !== name || !state.booted; });
+  Array.prototype.forEach.call($('tabs').querySelectorAll('a'), function (a) { a.classList.toggle('active', a.getAttribute('data-page') === name); });
+  if (state.booted) loadPage(name);
+}
+function navigate(name) {
+  if (PAGES.indexOf(name) < 0) name = 'today';
+  try { if (location.hash.replace(/^#/, '') !== name) location.hash = name; } catch (e) { /* ignore */ }
+  try { if (typeof google !== 'undefined' && google.script && google.script.history) google.script.history.replace(null, {}, name); } catch (e2) { /* ignore */ }
+  if (state.page !== name || !state.booted) showPage(name);
+}
+function loadPage(name) {
+  if (name === 'inbox' && !state.loaded.inbox) loadInbox();
+  if (name === 'agenda' && !state.agenda) loadAgenda('');
+  if (name === 'newsletter' && !state.loaded.newsletter) loadNewsletter();
+  if (name === 'history' && !state.history.loaded) loadHistory();
+}
+
+/* ---------- boot ---------- */
+function boot() {
+  $('loading').hidden = false; $('boot-error').hidden = true;
+  Promise.all([api('getBootstrap', {}), api('listTasks', { status: 'Open' })]).then(function (res) {
+    var b = res[0] || {};
+    state.today = b.today || ''; state.user = b.user || ''; state.config = b.config || {}; state.projects = b.projects || [];
+    state.inboxNew = (b.counts && b.counts.inboxNew) || 0;
+    state.qaCategory = CATEGORIES.indexOf(state.config.DEFAULT_QUICKADD_CATEGORY) >= 0 ? state.config.DEFAULT_QUICKADD_CATEGORY : 'Work';
+    state.tasks = (res[1] && res[1].tasks) || [];
+    return api('listTasks', { status: 'Done', from: state.today, to: state.today });
+  }).then(function (r) {
+    ((r && r.tasks) || []).forEach(applyTask);
+    state.booted = true;
+    $('loading').hidden = true;
+    $('page-' + state.page).hidden = false;
+    renderShell();
+    renderToday();
+    loadPage(state.page);
+    document.body.setAttribute('data-ready', '1');
+  }).catch(function (e) {
+    $('loading').hidden = true;
+    PAGES.forEach(function (p) { $('page-' + p).hidden = true; });
+    $('boot-error').hidden = false;
+    $('boot-error-text').textContent = errText(e);
+  });
+}
+function renderShell() {
+  var dl = $('projects-list');
+  clear(dl);
+  state.projects.forEach(function (p) { dl.appendChild(h('option', { value: p })); });
+  setQaCategory(state.qaCategory);
+  $('today-date').textContent = formatDateLong(state.today);
+  $('import-created').value = state.today;
+  $('import-category').value = state.qaCategory;
+  $('nl-to').value = state.today; $('nl-from').value = addDays(state.today, -28);
+  $('h-to').value = state.today; $('h-from').value = addDays(state.today, -28);
+  updateCounts();
+}
+function setQaCategory(value) {
+  state.qaCategory = value;
+  Array.prototype.forEach.call($('qa-category').children, function (b) {
+    var on = b.getAttribute('data-value') === value;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+  });
+}
+function setCount(name, n) {
+  var el = document.querySelector('[data-count="' + name + '"]');
+  el.textContent = n; el.hidden = !n;
+}
+function updateCounts() {
+  setCount('today', state.tasks.filter(function (t) { return t.status === 'Open'; }).length);
+  setCount('inbox', state.inboxNew);
+}
+function findTask(id) { for (var i = 0; i < state.tasks.length; i++) if (state.tasks[i].id === id) return state.tasks[i]; return null; }
+function applyTask(task) {
+  if (!task || !task.id) return null;
+  var existing = findTask(task.id);
+  if (task.status === 'Dropped') { if (existing) state.tasks.splice(state.tasks.indexOf(existing), 1); return task; }
+  if (existing) { Object.keys(task).forEach(function (k) { existing[k] = task[k]; }); delete existing.pending; return existing; }
+  state.tasks.push(task);
+  return task;
+}
+function removeTask(id) { var t = findTask(id); if (t) state.tasks.splice(state.tasks.indexOf(t), 1); }
+
+/* ---------- Today ---------- */
+function renderToday() {
+  var q = state.search;
+  CATEGORIES.forEach(function (cat) {
+    var col = $('col-' + cat.toLowerCase());
+    clear(col);
+    var tasks = state.tasks.filter(function (t) { return t.category === cat && matchesSearch(t, q); });
+    var g = groupTasks(tasks, state.today);
+    var open = g.overdue.length + g.dueToday.length + g.open.length;
+    col.appendChild(h('div', { class: 'column-title' }, [h('h2', { text: cat }), h('span', { class: 'muted small', text: open + ' open' + (g.doneToday.length ? ' · ' + g.doneToday.length + ' done today' : '') })]));
+    if (g.overdue.length) col.appendChild(groupEl('Overdue', g.overdue, 'overdue'));
+    if (g.dueToday.length) col.appendChild(groupEl('Due today', g.dueToday, 'due-today'));
+    col.appendChild(groupEl('Open', g.open, 'open'));
+    if (g.doneToday.length) {
+      // The group is rebuilt on every re-render (search, quick-add, any toast-driven applyTask): remember whether the
+      // user opened it, so it does not snap shut under them. The summary click records it synchronously (the toggle
+      // event is dispatched asynchronously and a re-render can land first); toggle covers every other way it changes.
+      var d = h('details', { class: 'group done-group', open: !!state.doneOpen[cat] || g.doneToday.some(function (t) { return t.id === state.expanded; }),
+        ontoggle: function () { state.doneOpen[cat] = this.open; } },
+        h('summary', { onclick: function () { state.doneOpen[cat] = !d.open; } },
+          h('div', { class: 'group-head' }, [h('h3', { text: 'Done today' }), h('span', { class: 'n', text: String(g.doneToday.length) })])));
+      g.doneToday.forEach(function (t) { d.appendChild(taskRow(t)); });
+      col.appendChild(d);
+    }
+  });
+  updateCounts();
+}
+function groupEl(title, tasks, cls) {
+  var g = h('div', { class: 'group ' + cls }, h('div', { class: 'group-head' }, [h('h3', { text: title }), h('span', { class: 'n', text: String(tasks.length) })]));
+  if (!tasks.length) g.appendChild(emptyEl(state.search ? 'No matches' : 'Nothing open'));
+  tasks.forEach(function (t) { g.appendChild(taskRow(t)); });
+  return g;
+}
+function chipsEl(t) {
+  var chips = [];
+  if (t.project) chips.push(h('span', { class: 'chip project', text: t.project }));
+  if (t.due) {
+    var diff = dayDiff(t.due, state.today);
+    chips.push(h('span', { class: 'chip due' + (t.status === 'Open' && diff !== null && diff < 0 ? ' overdue' : diff === 0 ? ' today' : ''), text: formatDateLabel(t.due, state.today) }));
+  }
+  if (t.priority === 'High') chips.push(h('span', { class: 'chip high', text: 'High' }));
+  if (t.newsletter) chips.push(h('span', { class: 'chip newsletter', text: 'Newsletter' }));
+  if (t.discuss) chips.push(h('span', { class: 'chip discuss', text: 'Discuss' }));
+  return chips.length ? h('div', { class: 'chips' }, chips) : null;
+}
+function taskRow(t) {
+  var done = t.status === 'Done';
+  var row = h('div', { class: 'task' + (done ? ' done' : '') + (!done && t.priority === 'High' ? ' high' : '') + (t.pending ? ' pending' : ''), data: { id: t.id } });
+  var main = h('div', { class: 'task-main' });
+  var cb = h('input', { type: 'checkbox', class: 'task-check', checked: done, disabled: !!t.pending, 'aria-label': (done ? 'Reopen: ' : 'Done: ') + t.title,
+    onchange: function () { onTick(t, cb); } });
+  var body = h('div', {}, [
+    h('button', { type: 'button', class: 'task-title', text: t.title, 'aria-expanded': state.expanded === t.id ? 'true' : 'false', disabled: !!t.pending,
+      onclick: function () {
+        var opening = state.expanded !== t.id;
+        state.expanded = opening ? t.id : null; state.draft = null; renderToday();
+        focusTask(t.id, opening ? '.editor textarea' : '.task-title'); // the re-render replaced the focused button
+      } }),
+    chipsEl(t)
+  ]);
+  var link = linkEl(t.link, '↗', 'task-link');
+  if (link) link.setAttribute('aria-label', 'Open ' + (t.source || 'link'));
+  main.appendChild(h('label', { class: 'task-check-wrap' }, cb)); main.appendChild(body); main.appendChild(link || h('span'));
+  if (state.noteFor === t.id) main.appendChild(noteBox(t));
+  if (state.expanded === t.id) main.appendChild(editorEl(t));
+  row.appendChild(main);
+  return row;
+}
+function onTick(t, cb) {
+  if (t.status === 'Open') { cb.checked = false; state.noteFor = t.id; state.expanded = null; renderToday(); focusIn('.note-box input'); }
+  else reopenTaskUI(t, false);
+}
+function focusIn(sel) { var el = document.querySelector(sel); if (el) el.focus(); return !!el; }
+function cssString(s) { return String(s === null || s === undefined ? '' : s).replace(/["\\]/g, '\\$&'); }
+/* Moves keyboard focus into a task row after renderToday() rebuilt the column (the focused element is gone by then). */
+function focusTask(id, sel) { return focusIn('.task[data-id="' + cssString(id) + '"] ' + sel); }
+/* The task row next to `id` in its column (for focus after the row itself disappears), or ''. */
+function neighbourTaskId(id) {
+  var el = document.querySelector('.task[data-id="' + cssString(id) + '"]');
+  var sib = el && (el.nextElementSibling || el.previousElementSibling);
+  return sib && sib.classList.contains('task') ? sib.getAttribute('data-id') : '';
+}
+function noteBox(t) {
+  var cancel = function () { state.noteFor = null; renderToday(); focusTask(t.id, '.task-check'); };
+  var input = h('input', { type: 'text', class: 'input small', placeholder: 'Outcome note (optional)', 'aria-label': 'Outcome note', maxlength: 200,
+    onkeydown: function (e) { if (e.key === 'Enter') { e.preventDefault(); completeTaskUI(t, input.value); } if (e.key === 'Escape') { e.stopPropagation(); cancel(); } } });
+  return h('div', { class: 'note-box' }, [
+    input,
+    h('button', { type: 'button', class: 'btn primary small', onclick: function () { completeTaskUI(t, input.value); } }, 'Done'),
+    h('button', { type: 'button', class: 'btn small', onclick: function () { completeTaskUI(t, ''); } }, 'Done, no note'),
+    h('button', { type: 'button', class: 'btn small', 'aria-label': 'Cancel', onclick: cancel }, '×')
+  ]);
+}
+function snapshot(t) { return { status: t.status, done: t.done, note: t.note, updated: t.updated }; }
+function restore(t, s) { t.status = s.status; t.done = s.done; t.note = s.note; t.updated = s.updated; }
+function completeTaskUI(t, note) {
+  note = cleanText(note);
+  state.noteFor = null;
+  var prev = snapshot(t);
+  t.status = 'Done'; t.done = state.today; if (note) t.note = t.note ? t.note + ' · ' + note : note; // same join as the server's appendNote_
+  renderToday();
+  // Optimistic: the success toast shows at once but is withdrawn if the server rejects the write.
+  var tt;
+  var p = api('completeTask', cleanPayload({ category: t.category, id: t.id, note: note || undefined }));
+  p.then(function (r) { applyTask(r.task); renderToday(); }, function (e) { if (tt) tt.dismiss(); restore(t, prev); renderToday(); toastError(e); });
+  tt = toast('Done: ' + truncate(t.title, 48), { type: 'ok', timeout: 10000, action: { label: 'Undo', fn: function () {
+    p.then(function () { reopenTaskUI(t, true); }, function () { /* already restored */ });
+  } } });
+}
+function reopenTaskUI(t, fromUndo) {
+  var prev = snapshot(t);
+  t.status = 'Open'; t.done = '';
+  renderToday();
+  var tt;
+  var p = api('reopenTask', { category: t.category, id: t.id });
+  p.then(function (r) { applyTask(r.task); renderToday(); }, function (e) { if (tt) tt.dismiss(); restore(t, prev); renderToday(); toastError(e); });
+  tt = toast('Reopened: ' + truncate(t.title, 48), fromUndo ? { type: 'ok' } : { type: 'ok', timeout: 10000, action: { label: 'Undo', fn: function () {
+    p.then(function () { completeTaskUI(t, ''); }, function () { /* already restored */ });
+  } } });
+}
+function editorEl(t) {
+  var d = state.draft && state.draft.id === t.id ? state.draft : (state.draft = { id: t.id, details: t.details || '', project: t.project || '', due: t.due || '',
+    priority: t.priority || 'Normal', link: t.link || '', note: t.note || '', newsletter: !!t.newsletter, discuss: !!t.discuss });
+  function bind(el, key) { el.addEventListener('input', function () { d[key] = el.type === 'checkbox' ? el.checked : el.value; }); return el; }
+  var other = t.category === 'Work' ? 'Personal' : 'Work';
+  var grid = h('div', { class: 'editor-grid' }, [
+    field('Details', bind(h('textarea', { class: 'input textarea small', rows: 2, value: d.details }), 'details'), 'full'),
+    field('Project', bind(h('input', { type: 'text', class: 'input small', list: 'projects-list', value: d.project }), 'project')),
+    field('Due', bind(h('input', { type: 'date', class: 'input small', value: d.due }), 'due')),
+    field('Priority', bind(selectEl(['High', 'Normal', 'Low'], d.priority, 'small'), 'priority')),
+    field('Link', bind(h('input', { type: 'url', class: 'input small', placeholder: 'https://', value: d.link }), 'link')),
+    field('Note', bind(h('input', { type: 'text', class: 'input small', maxlength: 200, value: d.note }), 'note'), 'full'),
+    h('div', { class: 'row gap wrap full' }, [
+      checkEl('Newsletter', d.newsletter, function () { d.newsletter = this.checked; }).el,
+      checkEl('Discuss with director', d.discuss, function () { d.discuss = this.checked; }).el
+    ])
+  ]);
+  var actions = h('div', { class: 'actions' }, [
+    h('button', { type: 'button', class: 'btn primary small', onclick: function () { saveEditor(t, d); } }, 'Save'),
+    h('button', { type: 'button', class: 'btn small', onclick: function () { state.expanded = null; state.draft = null; renderToday(); focusTask(t.id, '.task-title'); } }, 'Cancel'),
+    h('span', { class: 'spacer' }),
+    h('button', { type: 'button', class: 'btn small', onclick: function () { moveTaskUI(t, other); } }, 'Move to ' + other),
+    h('button', { type: 'button', class: 'btn small danger', onclick: function () { dropTaskUI(t, d.note); } }, 'Drop')
+  ]);
+  var meta = h('div', { class: 'muted small', text: 'Created ' + formatDateLabel(t.created, state.today) + ' · ' + (t.source || 'Manual') + ' · ' + t.id +
+    (t.status === 'Done' ? ' · done ' + formatDateLabel(t.done, state.today) : '') });
+  return h('div', { class: 'editor' }, [grid, actions, meta]);
+}
+function saveEditor(t, d) {
+  var patch = {};
+  ['details', 'project', 'due', 'priority', 'link', 'note'].forEach(function (k) { if (String(d[k] || '') !== String(t[k] || '')) patch[k] = d[k]; });
+  ['newsletter', 'discuss'].forEach(function (k) { if (!!d[k] !== !!t[k]) patch[k] = !!d[k]; });
+  if (patch.link !== undefined && patch.link && !sanitiseLink(patch.link)) { toast('Links must start with http:// or https://', { type: 'error' }); return; }
+  if (!Object.keys(patch).length) { state.expanded = null; state.draft = null; renderToday(); focusTask(t.id, '.task-title'); return; }
+  api('updateTask', { category: t.category, id: t.id, patch: patch }).then(function (r) {
+    applyTask(r.task); state.expanded = null; state.draft = null; renderToday(); focusTask(t.id, '.task-title'); toast('Saved: ' + truncate(t.title, 48), { type: 'ok' });
+  }, toastError);
+}
+function moveTaskUI(t, toCategory) {
+  api('moveTask', { category: t.category, id: t.id, toCategory: toCategory }).then(function (r) {
+    removeTask(t.id); applyTask(r.task); state.expanded = null; state.draft = null; renderToday();
+    if (!focusTask(r.task.id, '.task-title')) $('qa-title').focus(); // focus follows the task into its new column
+    toast('Moved to ' + toCategory + ': ' + truncate(r.task.title, 40), { type: 'ok' });
+  }, toastError);
+}
+function dropTaskUI(t, note) {
+  var idx = state.tasks.indexOf(t);
+  var nextId = neighbourTaskId(t.id);
+  removeTask(t.id); state.expanded = null; state.draft = null; renderToday();
+  if (!(nextId && focusTask(nextId, '.task-title'))) $('qa-title').focus(); // the dropped row is gone: the next task, else quick-add
+  var tt;
+  var p = api('dropTask', cleanPayload({ category: t.category, id: t.id, note: cleanText(note) || undefined }));
+  p.then(function () { /* stays removed */ }, function (e) { if (tt) tt.dismiss(); if (idx >= 0) state.tasks.splice(idx, 0, t); renderToday(); toastError(e); });
+  tt = toast('Dropped: ' + truncate(t.title, 48), { type: 'ok', timeout: 10000, action: { label: 'Undo', fn: function () {
+    p.then(function () {
+      api('reopenTask', { category: t.category, id: t.id }).then(function (r) { applyTask(r.task); renderToday(); toast('Restored: ' + truncate(t.title, 48), { type: 'ok' }); }, toastError);
+    }, function () { /* drop failed, task is back already */ });
+  } } });
+}
+function quickAdd() {
+  var input = $('qa-title'), title = cleanText(input.value);
+  if (!title) { input.focus(); return; }
+  var category = state.qaCategory;
+  var tmp = { id: 'tmp-' + String(Math.random()).slice(2), category: category, title: title, status: 'Open', created: state.today, priority: 'Normal', pending: true };
+  state.tasks.push(tmp); renderToday();
+  input.value = '';
+  api('addTask', { category: category, title: title }).then(function (r) {
+    removeTask(tmp.id);
+    var task = applyTask(r.task);
+    renderToday();
+    if (r.duplicate) toast('Already on your list: ' + truncate(task ? task.title : title, 48), { timeout: 6000 });
+    else toast('Added to ' + category + ': ' + truncate(title, 48), { type: 'ok' });
+  }, function (e) { removeTask(tmp.id); renderToday(); input.value = title; toastError(e); });
+}
+
+/* ---------- Inbox ---------- */
+function loadInbox() {
+  var list = $('inbox-list');
+  clear(list); list.appendChild(emptyEl('Loading…'));
+  api('listInbox', { status: state.inbox.status }).then(function (r) {
+    state.inbox.items = (r && r.items) || []; state.loaded.inbox = true;
+    if (state.inbox.status === 'New') state.inboxNew = state.inbox.items.length;
+    renderInbox();
+  }, function (e) { clear(list); list.appendChild(emptyEl('Could not load the inbox: ' + errText(e))); toastError(e); });
+}
+function renderInbox() {
+  var list = $('inbox-list');
+  clear(list);
+  var note = $('inbox-chatmode');
+  note.hidden = state.inbox.chatMode !== 'email' && state.inbox.chatMode !== 'off';
+  note.textContent = state.inbox.chatMode === 'email' ? 'Chat capture is running in email mode: delayed and partial (Google only emails about direct messages and @mentions left unread for 12 hours).'
+    : state.inbox.chatMode === 'off' ? 'Chat capture is off (Config CHAT_ENABLED).' : '';
+  if (!state.inbox.items.length) list.appendChild(emptyEl(state.inbox.status === 'New' ? 'Inbox is clear.' : 'No ' + state.inbox.status.toLowerCase() + ' items.'));
+  state.inbox.items.forEach(function (it) { list.appendChild(inboxItem(it)); });
+  updateCounts();
+}
+function inboxItem(it) {
+  var el = h('div', { class: 'item' + (state.inbox.promoting === it.id ? ' promoting' : ''), data: { id: it.id } });
+  el.appendChild(h('div', { class: 'item-head' }, [
+    h('span', { class: 'source-pill' + (it.source === 'Chat' ? ' chat' : ''), text: it.source || 'Gmail' }),
+    h('span', { class: 'item-title', text: it.subject || '(no subject)' }),
+    h('span', { class: 'item-meta', text: formatDateTimeLabel(it.captured, state.today) })
+  ]));
+  el.appendChild(h('div', { class: 'item-meta', text: (it.from || '') + (it.categoryHint ? ' · suggested: ' + it.categoryHint : '') }));
+  if (it.snippet) el.appendChild(h('div', { class: 'item-body', text: it.snippet }));
+  var actions = h('div', { class: 'item-actions' });
+  if (it.status === 'New' || !it.status) {
+    actions.appendChild(h('button', { type: 'button', class: 'btn primary small', onclick: function () { state.inbox.promoting = it.id; renderInbox(); focusIn('.promote-form input[type="text"]'); } }, 'Promote'));
+    actions.appendChild(h('button', { type: 'button', class: 'btn small', onclick: function () { ignoreInboxUI(it); } }, 'Ignore'));
+  } else {
+    actions.appendChild(h('span', { class: 'badge', text: it.status + (it.taskId ? ' · ' + it.taskId : '') }));
+  }
+  var link = linkEl(it.link, 'Open ' + (it.source === 'Chat' ? 'in Chat' : 'in Gmail') + ' ↗', 'small');
+  if (link) actions.appendChild(link);
+  el.appendChild(actions);
+  if (state.inbox.promoting === it.id) el.appendChild(promoteForm(it));
+  return el;
+}
+function promoteForm(it) {
+  var cat = CATEGORIES.indexOf(it.categoryHint) >= 0 ? it.categoryHint : 'Work';
+  var title = h('input', { type: 'text', class: 'input', maxlength: 140, value: cleanText(it.subject), 'aria-label': 'Task title' });
+  var project = h('input', { type: 'text', class: 'input', list: 'projects-list', placeholder: 'Project (optional)', 'aria-label': 'Project' });
+  var seg = segEl(cat, function (c) { cat = c; });
+  var submit = h('button', { type: 'submit', class: 'btn primary small' }, 'Add task');
+  var form = h('form', { class: 'promote-form', onsubmit: function (e) {
+    e.preventDefault();
+    if (submit.disabled) return; // a double Enter/tap must not send two promoteInbox calls
+    var t = cleanText(title.value);
+    if (!t) { title.focus(); return; }
+    submit.disabled = true;
+    api('promoteInbox', cleanPayload({ inboxId: it.id, category: cat, title: t, project: cleanText(project.value) || undefined })).then(function (r) {
+      state.inbox.promoting = null;
+      state.inbox.items = state.inbox.items.filter(function (x) { return x.id !== it.id; });
+      if (state.inbox.status === 'New') state.inboxNew = state.inbox.items.length;
+      applyTask(r.task); renderInbox(); renderToday();
+      if (r.duplicate) toast('Already on your list (linked to ' + r.task.id + '): ' + truncate(r.task.title, 48), { timeout: 6000 });
+      else toast('Added to ' + cat + ': ' + truncate(r.task.title, 48), { type: 'ok' });
+    }, function (err) { submit.disabled = false; toastError(err); });
+  } }, [seg, title, project,
+    h('div', { class: 'actions' }, [
+      submit,
+      h('button', { type: 'button', class: 'btn small', onclick: function () {
+        state.inbox.promoting = null; renderInbox();
+        focusIn('.item[data-id="' + cssString(it.id) + '"] .item-actions button'); // back on this item's Promote button
+      } }, 'Cancel')
+    ])]);
+  return form;
+}
+function ignoreInboxUI(it) {
+  api('ignoreInbox', { inboxId: it.id }).then(function () {
+    state.inbox.items = state.inbox.items.filter(function (x) { return x.id !== it.id; });
+    if (state.inbox.status === 'New') state.inboxNew = state.inbox.items.length;
+    renderInbox(); toast('Ignored: ' + truncate(it.subject, 48), { type: 'ok' });
+  }, toastError);
+}
+function runCapture() {
+  var btn = $('inbox-capture');
+  btn.disabled = true; btn.textContent = 'Capturing…';
+  api('runCaptureNow', {}).then(function (r) {
+    r = r || {};
+    state.inbox.chatMode = r.chatMode || '';
+    var msg = 'Captured ' + (r.gmail || 0) + ' from Gmail and ' + (r.chat || 0) + ' from Chat' + (r.chatMode ? ' (Chat mode: ' + r.chatMode + ')' : '');
+    var errors = r.errors || [];
+    toast(errors.length ? msg + ' · ' + errors.length + ' error' + (errors.length > 1 ? 's' : '') + ': ' + errors.join('; ') : msg, { type: errors.length ? 'error' : 'ok', timeout: 8000 });
+    state.loaded.inbox = false; loadInbox();
+  }, toastError).then(function () { btn.disabled = false; btn.textContent = 'Run capture now'; });
+}
+
+/* ---------- Import ---------- */
+function importRows() { return state.imp.textRows.concat(state.imp.htmlRows); }
+function reparseImportText() {
+  state.imp.textRows = parseImportText($('import-text').value, $('import-category').value);
+  renderImportPreview();
+}
+function renderImportPreview() {
+  var rows = importRows(), box = $('import-preview');
+  var selected = rows.filter(function (r) { return r.include && cleanText(r.title); }).length;
+  $('import-preview-count').textContent = rows.length ? '(' + selected + ' of ' + rows.length + ' selected)' : '';
+  $('import-go').disabled = !selected;
+  $('import-file-info').textContent = state.imp.htmlName ? state.imp.htmlName + ': ' + state.imp.htmlRows.length + ' item' + (state.imp.htmlRows.length === 1 ? '' : 's') : '';
+  clear(box);
+  if (!rows.length) { box.appendChild(emptyEl('Paste a list or choose a file to see the preview.')); return; }
+  rows.forEach(function (r) { box.appendChild(previewRow(r)); });
+}
+function previewRow(r) {
+  var el = h('div', { class: 'prow' + (r.include ? '' : ' skip') });
+  var extra = [];
+  if (r.due) extra.push('due ' + r.due);
+  if (r.priority === 'High') extra.push('High');
+  if (r.link) extra.push('link');
+  el.appendChild(h('input', { type: 'checkbox', checked: r.include, 'aria-label': 'Include', onchange: function () { r.include = this.checked; el.classList.toggle('skip', !r.include); renderImportCount(); } }));
+  el.appendChild(h('input', { type: 'text', class: 'input small pr-title', value: r.title, maxlength: 140, 'aria-label': 'Title', oninput: function () { r.title = this.value; renderImportCount(); } }));
+  var sub = h('div', { class: 'pr-sub' }, [
+    h('select', { class: 'input select small', 'aria-label': 'Category', value: r.category, onchange: function () { r.category = this.value; } }, CATEGORIES.map(function (c) { return h('option', { value: c, text: c }); })),
+    h('input', { type: 'text', class: 'input small', list: 'projects-list', placeholder: 'Project', value: r.project, 'aria-label': 'Project', oninput: function () { r.project = this.value; } }),
+    checkEl('Done', r.done, function () { r.done = this.checked; }).el,
+    h('span', { class: 'pr-extra', text: extra.join(' · ') })
+  ]);
+  el.appendChild(sub);
+  return el;
+}
+function renderImportCount() {
+  var rows = importRows();
+  var selected = rows.filter(function (r) { return r.include && cleanText(r.title); }).length;
+  $('import-preview-count').textContent = rows.length ? '(' + selected + ' of ' + rows.length + ' selected)' : '';
+  $('import-go').disabled = !selected;
+}
+function onImportFile(file) {
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function () {
+    var text = String(reader.result || '');
+    if (/\.html?$/i.test(file.name) || /^\s*<(!doctype|html|body|ul|ol|div)/i.test(text)) {
+      try {
+        state.imp.htmlRows = parseImportHtml(text, $('import-category').value);
+      } catch (e) {
+        // A malformed document must not leave the preview silently empty: fall back to the text rules on the tag-stripped text.
+        state.imp.htmlRows = parseImportText(text.replace(/<[^>]+>/g, '\n'), $('import-category').value);
+        toast('Could not read the structure of ' + file.name + ' (' + errText(e) + '); showing it as plain text', { type: 'error' });
+      }
+      state.imp.htmlName = file.name;
+    } else {
+      $('import-text').value = text;
+      state.imp.textRows = parseImportText(text, $('import-category').value);
+    }
+    $('import-result').hidden = true;
+    renderImportPreview();
+  };
+  reader.onerror = function () { toast('Could not read ' + file.name, { type: 'error' }); };
+  reader.readAsText(file);
+}
+function runImport() {
+  var rows = importRows().filter(function (r) { return r.include && cleanText(r.title); });
+  if (!rows.length) return;
+  var btn = $('import-go');
+  btn.disabled = true; btn.textContent = 'Importing…';
+  var payload = { category: $('import-category').value, text: previewRowsToText(rows), created: $('import-created').value || state.today };
+  api('importText', payload).then(function (r) {
+    var added = (r && r.added) || [], skipped = (r && r.skipped) || [];
+    added.forEach(applyTask);
+    return patchImportLinks(rows, added).then(function (linked) {
+      showImportResult(added, skipped, linked);
+      state.imp.textRows = []; state.imp.htmlRows = []; state.imp.htmlName = '';
+      $('import-text').value = '';
+      renderImportPreview(); renderToday();
+      toast('Imported ' + added.length + ' task' + (added.length === 1 ? '' : 's') + (skipped.length ? ', skipped ' + skipped.length : ''), { type: 'ok', timeout: 6000 });
+    });
+  }).catch(toastError).then(function () { btn.textContent = 'Import'; renderImportCount(); });
+}
+function patchImportLinks(rows, added) {
+  var byKey = Object.create(null); // titles are user text: "constructor" or "valueOf" must not hit Object.prototype
+  added.forEach(function (t) { byKey[normaliseTitleKey(t.title)] = t; });
+  var todo = [];
+  rows.forEach(function (r) {
+    var link = sanitiseLink(r.link), t = link ? byKey[normaliseTitleKey(r.title)] : null;
+    if (t && !t.link) todo.push({ task: t, link: link });
+  });
+  var count = 0;
+  return todo.reduce(function (p, x) {
+    return p.then(function () {
+      return api('updateTask', { category: x.task.category, id: x.task.id, patch: { link: x.link } }).then(function (res) { applyTask(res.task); count++; }, function () { /* keep going */ });
+    });
+  }, Promise.resolve()).then(function () { return count; });
+}
+function showImportResult(added, skipped, linked) {
+  var box = $('import-result');
+  clear(box); box.hidden = false;
+  box.appendChild(h('h2', { text: 'Imported ' + added.length + ' task' + (added.length === 1 ? '' : 's') + (skipped.length ? ' · skipped ' + skipped.length : '') + (linked ? ' · ' + linked + ' link' + (linked === 1 ? '' : 's') + ' attached' : '') }));
+  if (added.length) box.appendChild(h('ul', {}, added.map(function (t) { return h('li', { text: '[' + t.category + '] ' + t.title + (t.status === 'Done' ? ' (done)' : '') }); })));
+  if (skipped.length) box.appendChild(h('ul', { class: 'muted' }, skipped.map(function (s) { return h('li', { text: cleanText(s.line) + ' — ' + (s.reason || 'skipped') }); })));
+}
+
+/* ---------- Agenda ---------- */
+function loadAgenda(meetingDate) {
+  var box = $('agenda-sections');
+  clear(box); box.appendChild(emptyEl('Loading…'));
+  api('getAgenda', meetingDate ? { meetingDate: meetingDate } : {}).then(function (r) { state.agenda = normaliseAgenda(r); state.agendaDirty = false; renderAgenda(); },
+    function (e) { clear(box); box.appendChild(emptyEl('Could not load the agenda: ' + errText(e))); toastError(e); });
+}
+/* Unsaved Questions/Notes/Documents edits are not thrown away silently: the action waits behind a toast with a "Discard edits" button
+   (no window.confirm: the page runs in a sandboxed iframe, and a blocking dialog is not guaranteed there). */
+var agendaGuardToast = null;
+function agendaGuard(fn) {
+  if (!state.agendaDirty) { fn(); return; }
+  if (agendaGuardToast) agendaGuardToast.dismiss(); // a repeated trigger replaces the pending prompt instead of stacking another
+  agendaGuardToast = toast('You have unsaved agenda edits. Save first, or discard them.', { timeout: 8000, action: { label: 'Discard edits', fn: function () { agendaGuardToast = null; state.agendaDirty = false; fn(); } } });
+}
+function normaliseAgenda(a) {
+  a = a || {}; a.sections = a.sections || {};
+  AGENDA_SECTIONS.forEach(function (s) { a.sections[s] = (a.sections[s] || []).map(function (r) { return { order: r.order || 0, item: r.item || '', detail: r.detail || '', link: r.link || '', taskId: r.taskId || '' }; }); });
+  return a;
+}
+function renderAgenda() {
+  var a = state.agenda;
+  if (!a) return;
+  $('agenda-date').value = a.meetingDate || '';
+  $('agenda-window').textContent = a.window ? formatDateLabel(a.window.from, state.today) + ' – ' + formatDateLabel(a.window.to, state.today) : '';
+  $('agenda-state').textContent = a.saved ? 'Saved' : 'Draft';
+  $('agenda-state').className = 'badge' + (a.saved ? '' : ' gold');
+  $('agenda-director').textContent = state.config.DIRECTOR_NAME ? 'With ' + state.config.DIRECTOR_NAME : '';
+  var box = $('agenda-sections');
+  clear(box);
+  AGENDA_SECTIONS.forEach(function (name) { box.appendChild(agendaSection(name, a.sections[name])); });
+  Array.prototype.forEach.call(box.querySelectorAll('textarea'), autoGrow);
+}
+function autoGrow(ta) {
+  if (ta.parentNode) { ta.style.height = 'auto'; ta.style.height = (ta.scrollHeight + 2) + 'px'; }
+  return ta;
+}
+/* Move up / Move down / Remove rebuild every section, which would drop keyboard focus to <body>: put it back on the
+   same control of the row now at `index` (or the next usable button, the section's Add button, or its heading). */
+function focusAgendaRow(name, index, label) {
+  var rows = document.querySelectorAll('[data-section="' + name + '"] .arow');
+  var row = rows.length ? rows[Math.max(0, Math.min(index, rows.length - 1))] : null;
+  var btn = row && row.querySelector('[aria-label="' + label + '"]');
+  if (btn && btn.disabled) btn = row.querySelector('.ctl button:not([disabled])');
+  if (btn) { btn.focus(); return; }
+  if (!focusIn('[data-section="' + name + '"] button.add')) focusIn('[data-section="' + name + '"] h2');
+}
+function agendaSection(name, list) {
+  var editable = name === 'Questions' || name === 'Notes' || name === 'Documents';
+  var sec = h('div', { class: 'agenda-section', data: { section: name } }, h('h2', { tabindex: '-1' }, [name, h('span', { class: 'muted', text: list.length ? String(list.length) : '' })]));
+  if (!list.length) sec.appendChild(emptyEl(editable ? 'Nothing yet.' : 'Nothing in this window.'));
+  list.forEach(function (row, i) {
+    var el = h('div', { class: 'arow' + (editable ? ' editable' : '') });
+    if (editable) {
+      var fields = h('div', { class: 'fields' + (name === 'Documents' ? ' two' : '') });
+      if (name === 'Documents') fields.appendChild(h('input', { type: 'text', class: 'input small', value: row.item, 'aria-label': 'Document name', placeholder: 'Document name', oninput: function () { row.item = this.value; state.agendaDirty = true; } }));
+      else fields.appendChild(autoGrow(h('textarea', { class: 'input small', rows: 1, value: row.item, 'aria-label': name.slice(0, -1), placeholder: name === 'Questions' ? 'Question' : 'Note',
+        oninput: function () { row.item = this.value; state.agendaDirty = true; autoGrow(this); } })));
+      if (name === 'Documents') fields.appendChild(h('input', { type: 'url', class: 'input small', value: row.link, placeholder: 'https://', 'aria-label': 'Link', oninput: function () { row.link = this.value; state.agendaDirty = true; } }));
+      else fields.appendChild(h('input', { type: 'text', class: 'input small', value: row.detail, placeholder: 'Detail (optional)', 'aria-label': 'Detail', oninput: function () { row.detail = this.value; state.agendaDirty = true; } }));
+      el.appendChild(fields);
+    } else {
+      var text = h('div', { class: 'text' }, [h('div', { text: row.item }), row.detail ? h('div', { class: 'detail', text: row.detail }) : null, linkEl(row.link, 'Open ↗', 'small')]);
+      el.appendChild(text);
+    }
+    var ctl = h('div', { class: 'ctl' });
+    if (editable) {
+      ctl.appendChild(h('button', { type: 'button', class: 'btn icon small', 'aria-label': 'Move up', disabled: i === 0, onclick: function () {
+        list.splice(i, 1); list.splice(i - 1, 0, row); state.agendaDirty = true; renderAgenda(); focusAgendaRow(name, i - 1, 'Move up');
+      } }, '▲'));
+      ctl.appendChild(h('button', { type: 'button', class: 'btn icon small', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: function () {
+        list.splice(i, 1); list.splice(i + 1, 0, row); state.agendaDirty = true; renderAgenda(); focusAgendaRow(name, i + 1, 'Move down');
+      } }, '▼'));
+    }
+    ctl.appendChild(h('button', { type: 'button', class: 'btn icon small danger', 'aria-label': 'Remove', onclick: function () {
+      list.splice(i, 1); state.agendaDirty = true; renderAgenda(); focusAgendaRow(name, i, 'Remove');
+    } }, '×'));
+    el.appendChild(ctl);
+    sec.appendChild(el);
+  });
+  if (editable) sec.appendChild(h('button', { type: 'button', class: 'btn small add', onclick: function () {
+    list.push({ order: list.length + 1, item: '', detail: '', link: '', taskId: '' }); state.agendaDirty = true; renderAgenda();
+    var inputs = document.querySelectorAll('[data-section="' + name + '"] .arow input, [data-section="' + name + '"] .arow textarea'); if (inputs.length >= 2) inputs[inputs.length - 2].focus();
+  } }, '+ Add ' + (name === 'Documents' ? 'document' : name === 'Questions' ? 'question' : 'note')));
+  return sec;
+}
+function agendaSectionsForSave() {
+  var out = {};
+  AGENDA_SECTIONS.forEach(function (name) {
+    // The server keeps only rows with an Item, so a Documents row typed as a bare link uses the link as its name.
+    out[name] = state.agenda.sections[name].filter(function (r) { return cleanText(r.item) || sanitiseLink(r.link); }).map(function (r, i) {
+      return { order: i + 1, item: cleanText(r.item) || sanitiseLink(r.link), detail: cleanText(r.detail), link: sanitiseLink(r.link), taskId: r.taskId || '' };
+    });
+  });
+  return out;
+}
+function saveAgenda() {
+  if (!state.agenda) return;
+  var btn = $('agenda-save');
+  btn.disabled = true;
+  var sections = agendaSectionsForSave();
+  api('saveAgenda', { meetingDate: state.agenda.meetingDate, sections: sections }).then(function (r) {
+    state.agenda.sections = sections; state.agenda.saved = true; state.agendaDirty = false; renderAgenda();
+    toast('Agenda saved (' + ((r && r.rows) || 0) + ' rows)', { type: 'ok' });
+  }, toastError).then(function () { btn.disabled = false; });
+}
+function regenerateAgenda() {
+  if (!state.agenda) return;
+  var btn = $('agenda-regenerate');
+  btn.disabled = true;
+  api('regenerateAgenda', { meetingDate: state.agenda.meetingDate }).then(function (r) {
+    state.agenda = normaliseAgenda(r); state.agendaDirty = false; renderAgenda(); toast('Draft regenerated from your tasks', { type: 'ok' });
+  }, toastError).then(function () { btn.disabled = false; });
+}
+
+/* ---------- Newsletter ---------- */
+function loadNewsletter() {
+  var list = $('nl-list');
+  clear(list); list.appendChild(emptyEl('Loading…'));
+  state.nl.from = $('nl-from').value; state.nl.to = $('nl-to').value;
+  api('getNewsletter', cleanPayload({ from: state.nl.from || undefined, to: state.nl.to || undefined })).then(function (r) {
+    state.nl.tasks = (r && r.tasks) || []; state.nl.markdown = (r && r.markdown) || ''; state.loaded.newsletter = true; renderNewsletter();
+  }, function (e) { clear(list); list.appendChild(emptyEl('Could not load: ' + errText(e))); toastError(e); });
+}
+function renderNewsletter() {
+  var list = $('nl-list');
+  clear(list);
+  $('nl-markdown').textContent = state.nl.markdown;
+  if (!state.nl.tasks.length) { list.appendChild(emptyEl('No newsletter items in this range.')); return; }
+  var groups = Object.create(null), order = []; // project names are user text: "constructor" must not hit Object.prototype
+  state.nl.tasks.forEach(function (t) { var k = t.project || 'No project'; if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(t); });
+  order.forEach(function (k) {
+    list.appendChild(h('h3', { class: 'group-title', text: k }));
+    groups[k].forEach(function (t) {
+      list.appendChild(h('div', { class: 'item' }, [
+        h('div', { class: 'item-head' }, [h('span', { class: 'item-title', text: t.title }), h('span', { class: 'badge' + (t.status === 'Done' ? '' : ' gold'), text: t.status === 'Done' ? 'Done ' + formatDateLabel(t.done, state.today) : 'In progress' })]),
+        t.note ? h('div', { class: 'item-body', text: t.note }) : (t.details ? h('div', { class: 'item-body', text: t.details }) : null),
+        linkEl(t.link, 'Open ↗', 'small')
+      ]));
+    });
+  });
+}
+
+/* ---------- History ---------- */
+function loadHistory() {
+  var list = $('history-list');
+  clear(list); list.appendChild(emptyEl('Loading…'));
+  var p = cleanPayload({ category: $('h-category').value || undefined, status: $('h-status').value, from: $('h-from').value || undefined, to: $('h-to').value || undefined, search: cleanText($('h-search').value) || undefined });
+  api('listTasks', p).then(function (r) { state.history.tasks = (r && r.tasks) || []; state.history.loaded = true; renderHistory(); },
+    function (e) { clear(list); list.appendChild(emptyEl('Could not load: ' + errText(e))); toastError(e); });
+}
+function renderHistory() {
+  var list = $('history-list');
+  clear(list);
+  if (!state.history.tasks.length) { list.appendChild(emptyEl('Nothing matches these filters.')); return; }
+  state.history.tasks.forEach(function (t) {
+    list.appendChild(h('div', { class: 'item', data: { id: t.id } }, [
+      h('div', { class: 'item-head' }, [h('span', { class: 'item-title', text: t.title }), h('span', { class: 'badge', text: t.category }),
+        h('span', { class: 'item-meta', text: t.status === 'Done' ? 'Done ' + formatDateLabel(t.done, state.today) : 'Dropped · created ' + formatDateLabel(t.created, state.today) })]),
+      chipsEl(t),
+      t.note ? h('div', { class: 'item-body', text: t.note }) : null,
+      h('div', { class: 'item-actions' }, [
+        h('button', { type: 'button', class: 'btn small', onclick: function () { reopenFromHistory(t); } }, 'Reopen'),
+        linkEl(t.link, 'Open ↗', 'small')
+      ])
+    ]));
+  });
+}
+function reopenFromHistory(t) {
+  api('reopenTask', { category: t.category, id: t.id }).then(function (r) {
+    state.history.tasks = state.history.tasks.filter(function (x) { return x.id !== t.id; });
+    applyTask(r.task); renderHistory(); renderToday(); toast('Reopened: ' + truncate(t.title, 48), { type: 'ok' });
+  }, toastError);
+}
+
+/* ---------- downloads and clipboard ---------- */
+function downloadBlob(name, blob) {
+  var url = URL.createObjectURL(blob);
+  var a = h('a', { href: url, download: name, target: '_blank', rel: 'noopener' });
+  document.body.appendChild(a); a.click();
+  setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+}
+/* Resolves 'ok' once the deferred SheetJS script is usable, 'failed' when its onerror fired, or 'timeout' after 15 s of
+   neither (a slow connection right after load): the Index.html tag sets window.__xlsxLoaded / window.__xlsxFailed. */
+function xlsxReady() {
+  return new Promise(function (resolve) {
+    var status = function () { return window.XLSX ? 'ok' : (window.__xlsxFailed ? 'failed' : ''); };
+    if (status()) { resolve(status()); return; }
+    var waiting = toast('Preparing the spreadsheet…', { timeout: 15000 });
+    var tries = 0, iv = setInterval(function () {
+      tries++;
+      if (status() || tries > 150) { clearInterval(iv); waiting.dismiss(); resolve(status() || 'timeout'); }
+    }, 100);
+  });
+}
+function downloadWorkbook(built) {
+  return xlsxReady().then(function (status) {
+    if (status === 'ok') {
+      try {
+        var ws = XLSX.utils.aoa_to_sheet(built.rows);
+        built.links.forEach(function (l) { var addr = XLSX.utils.encode_cell({ r: l.r, c: l.c }); if (ws[addr]) ws[addr].l = { Target: l.url }; });
+        ws['!cols'] = built.cols;
+        var wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, built.sheetName);
+        XLSX.writeFile(wb, built.fileName + '.xlsx');
+        toast('Downloaded ' + built.fileName + '.xlsx', { type: 'ok' });
+        return 'xlsx';
+      } catch (e) { toast('Excel export failed (' + errText(e) + '), downloading CSV instead', { type: 'error' }); }
+    } else if (status === 'timeout') {
+      toast('The spreadsheet library has not loaded yet, so this is a .csv instead of .xlsx; try again in a moment', { timeout: 6000 });
+    } else {
+      toast('The spreadsheet library did not load, so this is a .csv instead of .xlsx', { timeout: 6000 });
+    }
+    downloadBlob(built.fileName + '.csv', new Blob(['\ufeff' + csvFromRows(built.rows)], { type: 'text/csv;charset=utf-8' }));
+    return 'csv';
+  });
+}
+function copyText(text) {
+  function legacy() {
+    var ta = h('textarea', { value: text, 'aria-hidden': 'true', style: 'position:fixed;top:0;left:0;opacity:0;pointer-events:none' });
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    if (!ok) throw new Error('Copy is not available in this browser');
+    return true;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return legacy(); });
+  }
+  return new Promise(function (resolve) { resolve(legacy()); });
+}
+
+/* ---------- init ---------- */
+function init() {
+  document.body.appendChild(h('datalist', { id: 'projects-list' }));
+  Array.prototype.forEach.call($('tabs').querySelectorAll('a'), function (a) {
+    a.addEventListener('click', function (e) { e.preventDefault(); navigate(a.getAttribute('data-page')); });
+  });
+  window.addEventListener('hashchange', function () { var p = location.hash.replace(/^#/, ''); if (p && p !== state.page) showPage(p); });
+  try {
+    if (typeof google !== 'undefined' && google.script && google.script.history && google.script.history.setChangeHandler) {
+      google.script.history.setChangeHandler(function (e) { var p = e && e.location && e.location.hash; if (p && p !== state.page) showPage(p); });
+    }
+  } catch (e) { /* ignore */ }
+  $('boot-retry').addEventListener('click', boot);
+  $('quickadd').addEventListener('submit', function (e) { e.preventDefault(); quickAdd(); });
+  Array.prototype.forEach.call($('qa-category').children, function (b) {
+    b.addEventListener('click', function () { setQaCategory(b.getAttribute('data-value')); });
+  });
+  $('today-search').addEventListener('input', function () { state.search = this.value; renderToday(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && (state.expanded || state.noteFor)) {
+      var id = state.expanded || state.noteFor, wasNote = !state.expanded;
+      state.expanded = null; state.noteFor = null; state.draft = null; renderToday();
+      focusTask(id, wasNote ? '.task-check' : '.task-title');
+    }
+  });
+  $('inbox-status').addEventListener('change', function () { state.inbox.status = this.value; state.inbox.promoting = null; loadInbox(); });
+  $('inbox-refresh').addEventListener('click', loadInbox);
+  $('inbox-capture').addEventListener('click', runCapture);
+  var importTimer;
+  $('import-text').addEventListener('input', function () { clearTimeout(importTimer); importTimer = setTimeout(reparseImportText, 150); });
+  $('import-category').addEventListener('change', function () {
+    reparseImportText();
+    if (state.imp.htmlRows.length) { var cat = this.value; state.imp.htmlRows.forEach(function (r) { if (r.source === 'html') r.category = cat; }); renderImportPreview(); }
+  });
+  $('import-file').addEventListener('change', function () { onImportFile(this.files && this.files[0]); this.value = ''; });
+  $('import-go').addEventListener('click', runImport);
+  $('agenda-date').addEventListener('change', function () {
+    var wanted = this.value, input = this;
+    if (!wanted || (state.agenda && wanted === state.agenda.meetingDate)) return; // nothing to load for the week already shown
+    if (state.agendaDirty && state.agenda) input.value = state.agenda.meetingDate || ''; // stay on the edited week until the edits are saved or discarded
+    agendaGuard(function () { loadAgenda(wanted); });
+  });
+  $('agenda-regenerate').addEventListener('click', function () { agendaGuard(regenerateAgenda); });
+  $('agenda-save').addEventListener('click', saveAgenda);
+  $('agenda-copy').addEventListener('click', function () {
+    if (!state.agenda) return;
+    copyText(agendaToText(state.agenda, { directorName: state.config.DIRECTOR_NAME })).then(function () { toast('Agenda copied as text', { type: 'ok' }); }, toastError);
+  });
+  $('agenda-download').addEventListener('click', function () { if (state.agenda) downloadWorkbook(buildAgendaWorkbookRows(state.agenda, { directorName: state.config.DIRECTOR_NAME })); });
+  $('nl-apply').addEventListener('click', loadNewsletter);
+  $('nl-copy').addEventListener('click', function () {
+    if (!state.nl.markdown) { toast('Nothing to copy yet', { type: 'error' }); return; }
+    copyText(state.nl.markdown).then(function () { toast('Newsletter copied as Markdown', { type: 'ok' }); }, toastError);
+  });
+  $('nl-download').addEventListener('click', function () { downloadWorkbook(buildNewsletterWorkbookRows(state.nl.tasks, { from: state.nl.from, to: state.nl.to })); });
+  $('history-filters').addEventListener('submit', function (e) { e.preventDefault(); loadHistory(); });
+  readHash(function (hash) { showPage(hash || 'today'); boot(); });
+}
+init();
+</script>

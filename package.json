@@ -1,0 +1,21 @@
+{
+  "name": "brandons-desk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private task tracker: Google Apps Script web app + Google Sheet (Work/Personal tasks, Gmail/Chat capture, director agenda, newsletter notes).",
+  "scripts": {
+    "test": "node tests/run.js && node tests/e2e.js",
+    "test:unit": "node tests/run.js",
+    "test:e2e": "node tests/e2e.js",
+    "ui": "node tests/ui/render.js",
+    "ui:build": "node tests/ui/assemble.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "playwright": "1.56.1",
+    "xlsx": "0.18.5"
+  }
+}

@@ -51,7 +51,7 @@ Spreadsheet time zone: `Asia/Dubai`. Header row 1 is frozen on every tab. All da
 | L | Discuss | checkbox | "Discuss with director". Brings the task and its link into the agenda. |
 | M | Due | date | Optional. |
 | N | Priority | dropdown (strict) | `High`, `Normal`, `Low`. Default `Normal`. |
-| O | Source key | text | Dedupe key: `gmail:<threadId>`, `chat:<message name>`, `cal:<eventId>`, `import:<sha1 of normalised title+date>`, blank for manual. Unique when present. |
+| O | Source key | text | Dedupe key: `gmail:<id of the first message in the thread>` (Gmail thread IDs change as messages arrive; message IDs are immutable), `chat:<message name>`, `cal:<eventId>`, `import:<sha1 of normalised title+date>`, blank for manual. Unique when present. |
 | P | Updated | datetime | Set on every write by the app. |
 
 Conditional formatting: Done rows grey + strikethrough, Dropped rows light grey, High priority red bold. Banding header purple `#21076C`.
@@ -67,7 +67,7 @@ Conditional formatting: Done rows grey + strikethrough, Dropped rows light grey,
 | E | Subject | subject or space name |
 | F | Snippet | ≤ 400 chars plain text |
 | G | Link | permalink |
-| H | Source key | `gmail:<threadId>` / `chat:<message name>` — unique |
+| H | Source key | `gmail:<first message id>` / `chat:<message name>` — unique |
 | I | Status | `New` / `Promoted` / `Ignored` |
 | J | Task ID | task created from this row, if any |
 | K | Category hint | `Work` / `Personal` |
@@ -101,7 +101,7 @@ Claude's routines append rows with the Sheets API. They always write the same co
 
 ```
 apps-script/
-  appsscript.json      manifest: timeZone Asia/Dubai, V8, webapp {access: MYSELF, executeAs: USER_DEPLOYING}, explicit oauthScopes
+  appsscript.json      manifest: timeZone Asia/Dubai, V8, exceptionLogging STACKDRIVER, webapp {access: MYSELF, executeAs: USER_DEPLOYING}, explicit oauthScopes (spreadsheets, gmail.readonly, script.external_request, script.scriptapp, userinfo.email, chat.spaces.readonly, chat.messages.readonly)
   Config.gs            SHEET_ID (Script Property, fallback constant), column maps, enums, readConfig()
   Sheet.gs             open/ensure tabs, row <-> object mapping, healSheet, ids, find/append/update with LockService
   Tasks.gs             task operations (add/update/complete/reopen/drop/move/list), dedupe, auto-tagging
@@ -118,11 +118,11 @@ apps-script/
   App.html             client JS (single-page app, google.script.run calls, SheetJS export)
 ```
 
-Plain JavaScript (V8 runtime). No `import`/`export` in `.gs` files. Every `.gs` file must also load in the Node test harness (section 9), so no top-level calls to Google services: all service access happens inside functions.
+Plain JavaScript (V8 runtime). No `import`/`export`/`require` in `.gs` files (Apps Script loads every file into one global scope; `.clasp.json` lists `Config.gs` and `Util.gs` first in `filePushOrder`, and no file may reference another file's globals at load time). Every `.gs` file must also load in the Node test harness (section 9), so no top-level calls to Google services: all service access happens inside functions.
 
 ## 5. Server API (`google.script.run.<fn>`)
 
-All functions take one plain object and return one plain JSON-safe object. Dates in and out are strings: `yyyy-MM-dd` for dates, ISO 8601 for datetimes. Every call runs `guard()` first (section 7). Errors throw `Error` with a short message the UI shows; internal details go to Log.
+All functions take one plain object and return one plain JSON-safe object. Dates in and out are strings: `yyyy-MM-dd` for dates, ISO 8601 for datetimes. `Range.getValues()` returns `Date` objects for date cells and `google.script.run` cannot return a `Date` (the call fails), so every row is converted to strings before it leaves the server; no server function may return a `Date`, `undefined` inside arrays, or a function. Every call runs `guard()` first (section 7). Errors throw `Error` with a short message the UI shows; internal details go to Log.
 
 Task object returned everywhere:
 
@@ -183,7 +183,7 @@ Task object returned everywhere:
 
 **Import (HTML).** Strip `<script>`/`<style>`. Walk headings (`h1`–`h4`) and lists (`li`, and any element with `type="checkbox"` + label text, and elements whose class contains `task` or `todo`). A heading whose text contains "work"/"school"/"AISA" sets category Work; "personal"/"home" sets Personal; other headings set Project. A checked checkbox or a `line-through`/`done`/`completed`/`checked` class = Done. Text is decoded (`&amp;` etc.) and whitespace-collapsed. Links inside an item (`<a href>`) become the task Link. Falls back to the text importer on the stripped text when no list items are found. Never evaluates the HTML.
 
-**Capture (Gmail).** `GmailApp.search(GMAIL_QUERY, 0, 50)`. For each thread: skip when the last message is from me (any `ALLOWED_EMAILS`), when `gmail:<threadId>` exists in Inbox or in Work/Personal Source key, or when the sender looks automated (`noreply`, `no-reply`, `notification`, `mailer-daemon`, `calendar-notification`, `List-Unsubscribe` header present). Inbox row: From = last message sender, Subject, Snippet = first 400 chars of last message plain body with quoted replies removed, Link = `https://mail.google.com/mail/u/0/#all/<threadId>` (or the format research confirms), Category hint = Work.
+**Capture (Gmail).** `GmailApp.search(GMAIL_QUERY, 0, 50)` then one `GmailApp.getMessagesForThreads(threads)` call (not `getMessages()` per thread). "Me" = `Session.getEffectiveUser().getEmail()` plus `GmailApp.getAliases()` plus `ALLOWED_EMAILS`, compared on the bare address extracted from `getFrom()` (`Name <addr>`). For each thread: skip when the last message is from me, when the thread has a draft, when `gmail:<first message id>` exists in Inbox or in Work/Personal Source key, or when the last message looks automated: sender matches `/noreply|no-reply|donotreply|notifications?@|mailer-daemon|calendar-notification/i`, or it has a `List-Unsubscribe` or `List-Id` header, or `Precedence` is bulk/list/junk, or `Auto-Submitted` starts with `auto-`. Inbox row: From = last message sender (as given), Subject, Snippet = first 400 chars of the last message's plain body with quoted replies (lines starting `>` and anything after `On … wrote:`) removed, Link = `https://mail.google.com/mail/u/<work email>/#all/<threadId>`, Source key = `gmail:<first message id>`, Category hint = Work. `GmailThread.getPermalink()` is not used (it hard-codes `/u/0/#inbox/`).
 
 **Capture (Chat).** When `CHAT_ENABLED`: try the Chat API with user auth (section research decides the exact calls): list spaces, list messages newer than `CHAT_LOOKBACK_DAYS`, keep messages not sent by me that are in a DM or that mention me; Inbox row Source = Chat, From = sender display name, Subject = space display name (or "Direct message"), Snippet = message text (≤ 400), Link = message permalink, Source key = `chat:<message.name>`. On HTTP 403/401 or a disabled-API error: log once (`Log` level WARN, message starts `CHAT_API_BLOCKED`), set `chatMode = "email"` and parse Gmail notifications from `chat-noreply@google.com` in the lookback window instead (Source key `chat:email:<messageId>`). `chatMode` is reported by `runCaptureNow`.
 
@@ -227,15 +227,16 @@ Every write shows a toast and updates the local state without a full reload. Fai
 - guard(): allowed email passes, other email throws, blank email behaviour
 - esc() and link sanitiser (client code is also loaded into a jsdom-free check by extracting the pure helpers into `App.html` under a `/* pure */` marker that the test harness evals)
 
-## 10. Setup (what the README gives Brandon, in order)
+## 10. Setup (what the README gives Brandon, in order; clasp 3.4.x command names)
 
-1. `npm install -g @google/clasp` (Node 18+), `clasp login` (browser, with the **work** account), turn on the Apps Script API at script.google.com/home/usersettings.
-2. `git clone`, `cd brandons-desk`, `npm install`, `npm test`.
-3. `clasp create` (standalone, rootDir `apps-script`) → writes `.clasp.json`; `clasp push`.
-4. In the Apps Script editor (`clasp open`): run `setup` once, approve the scopes, read the Log for the sheet URL; run `installTriggers`.
-5. Deploy → New deployment → Web app → Execute as me → Only myself → copy the `/exec` URL. Later updates: `clasp push && clasp deploy -i <deploymentId>`.
-6. Paste the sheet URL to Claude so the routines point at it (if a new sheet was created in step 4).
-7. Optional: Chat API setup steps (GCP project link + enable Chat API), or leave `CHAT_ENABLED` and let the email fallback work.
+1. Node ≥ 22. `npm install -g @google/clasp` → `clasp --version` shows 3.4.x. Signed in to the browser as the **work** account: turn on "Google Apps Script API" at https://script.google.com/home/usersettings. `clasp login` (approve every scope).
+2. `git clone`, `cd brandons-desk`, `npm test`.
+3. `clasp create-script --type webapp --title "Brandon's Desk" --rootDir ./apps-script` (writes `./.clasp.json`; if it also pulls a stub `Code.gs`/`appsscript.json` into `apps-script/`, delete the stub `Code.gs` and keep ours). Then `clasp push -f`.
+4. `clasp open-script` → in the editor run `setup` once (approve the scopes; the Log tab and the execution log show the sheet URL), then run `installTriggers`.
+5. First deployment is a browser step (clasp 3.x cannot set the web-app access flags): Deploy → New deployment → type Web app → Execute as **Me** → Who has access **Only myself** → Deploy → copy the `/exec` URL and the Deployment ID.
+6. Every later release: `clasp push -f && clasp create-deployment -i <deploymentId> -d "<what changed>"`, then check Deploy → Manage deployments shows the new version (a known clasp 3 issue sometimes needs the browser Edit → New version → Deploy instead). The `/dev` URL always runs the latest pushed code for the owner.
+7. If `setup` created a new sheet, paste its URL to Claude so the routines point at it.
+8. Optional Google Chat API: Project Settings → link a standard GCP project → enable the Google Chat API; otherwise the email-notification fallback runs. Config `CHAT_ENABLED` turns Chat capture off entirely.
 
 ## 11. Claude routines (created from the Claude session, not in this repo)
 

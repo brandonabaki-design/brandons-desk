@@ -14,7 +14,7 @@ docs/          SPEC.md, research-notes.md, routines.md, UI.md
 
 ## Setup, in order
 
-Everything below happens signed in as the **work** account (`bbaki@aisa.sch.ae`). Command names are for clasp 3.4.x. Steps 1–3 and 6 are the terminal; steps 4, 5 and 7 are the browser.
+Everything below happens signed in as the **work** account (`bbaki@aisa.sch.ae`). Command names are for clasp 3.4.x. Steps 1–3 and 6 are the terminal; steps 4, 5 and 7 are the browser. Paste terminal commands one line at a time: the Mac's default shell (zsh) does not treat `#` as a comment when pasting, so nothing here has inline comments.
 
 ### 1. Tools (once)
 
@@ -22,6 +22,9 @@ Everything below happens signed in as the **work** account (`bbaki@aisa.sch.ae`)
 2. `npm install -g @google/clasp`, then `clasp --version` must print 3.4.x.
 3. In the browser, signed in as the work account, switch on **Google Apps Script API** at https://script.google.com/home/usersettings. Without it every clasp command fails with "User has not enabled the Apps Script API".
 4. `clasp login` and approve every scope it asks for.
+5. `clasp show-authorized-user` must print the **work** account. If it prints another account, run `clasp logout`, then `clasp login` again and pick the work account. A project created while clasp is logged in as the wrong account belongs to that account; delete `.clasp.json` and create it again (step 3).
+
+If `npm install` fails with `EACCES: permission denied` under `~/.npm`, an earlier `sudo npm` left root-owned files in the npm cache: `sudo chown -R $(id -u):$(id -g) ~/.npm` fixes it.
 
 ### 2. The repo
 
@@ -39,29 +42,19 @@ npm test
 
 ```
 clasp create-script --type webapp --title "Brandon's Desk" --rootDir ./apps-script
-rm apps-script/Code.gs && git checkout -- apps-script/appsscript.json
+rm -f apps-script/Code.gs
+git checkout -- apps-script/appsscript.json
+clasp push -f
 ```
 
 - `clasp create-script` writes `./.clasp.json` in the repo root (not inside `apps-script/`). That file is git-ignored; `.clasp.json.example` is the template.
-- It also always pulls a stub `Code.gs` and a default `appsscript.json` into `apps-script/`, overwriting the committed manifest. The second line above removes the stub and restores ours.
-- Open `.clasp.json` and add the `filePushOrder` line from `.clasp.json.example`, so the file reads:
-
-  ```
-  {"scriptId": "<your id>", "rootDir": "./apps-script", "filePushOrder": ["apps-script/Config.gs", "apps-script/Util.gs"]}
-  ```
-
-  (Apps Script loads every file into one global scope; `Config.gs` and `Util.gs` must load first.)
-- Then:
-
-  ```
-  clasp push -f
-  ```
-
-  `-f` overwrites the manifest without asking.
+- It also pulls Google's default `appsscript.json` (and sometimes a stub `Code.gs`) into `apps-script/`, overwriting the committed manifest. The next two lines remove the stub if there is one and restore our manifest. **Do not skip the `git checkout` line**: without it the project is pushed with no scopes, no web-app settings and the wrong time zone. `git status` should show nothing changed under `apps-script/` before you push.
+- `clasp push -f` uploads 15 files (`-f` overwrites the remote manifest without asking).
+- The files load correctly in any order, so `filePushOrder` in `.clasp.json` is optional.
 
 ### 4. Run `setup` in the editor (browser)
 
-`clasp open-script` opens the project in the Apps Script editor. Pick the function **`setup`** in the toolbar and press **Run**. The consent screen lists seven scopes; approve them all:
+`clasp open-script` opens the project in the Apps Script editor (reload the tab if it was already open before the last push). Pick the function **`setup`** in the toolbar and press **Run**. The consent screen lists seven scopes; approve them all. If it lists fewer, or none about Google Chat, our manifest was not pushed: run `git checkout -- apps-script/appsscript.json` and `clasp push -f`, then reload the editor.
 
 | Scope | Why |
 |---|---|
@@ -106,7 +99,8 @@ Open the `/exec` URL in a Chrome profile (or an incognito window) signed in **on
 ### 6. Every later release (terminal)
 
 ```
-clasp push -f && clasp create-deployment -i <deploymentId> -d "what changed"
+clasp push -f
+clasp create-deployment -i <deploymentId> -d "what changed"
 ```
 
 Then check that **Deploy → Manage deployments** in the editor shows the new version. A known clasp 3 issue sometimes leaves the deployment on the old version; if so, do it in the browser instead: Manage deployments → pencil (Edit) → Version: *New version* → Deploy. (`clasp create-version` followed by `clasp update-deployment <deploymentId> -V <n>` is the two-step equivalent.) `clasp open-web-app <deploymentId>` opens the app. The `/dev` URL (editor → Deploy → Test deployments) always runs the latest pushed code for the owner, without a new deployment, which is handy for trying a change before releasing it.

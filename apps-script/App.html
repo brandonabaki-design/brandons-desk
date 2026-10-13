@@ -209,6 +209,151 @@ function previewRowsToText(rows) {
   });
   return lines.join('\n');
 }
+
+/* ---------- Desk (docs/DESK.md) ---------- */
+var DESK_URL = 'https://claude.ai/artifact/3mG2UW54W6WkRFMAqkqxzr'; // the routine's Desk page; used when getDesk sends no deskUrl
+var DESK_AISA_MAIL = 'https://mail.google.com/mail/?authuser=bbaki%40aisa.sch.ae#';
+var DESK_PERSONAL_THREAD = 'https://mail.google.com/mail/?authuser=brandon.abaki@gmail.com#all/thread-f:';
+var DESK_LANES = [{ key: 'now', title: 'Do today' }, { key: 'reply', title: 'Reply & follow up' }, { key: 'later', title: 'This week' }];
+var DESK_TAG_KINDS = ['late', 'due', 'new', 'home', 'gh', 'list']; // '' (a source tag such as Email) uses the default chip
+var DESK_DAY_CLASSES = ['now', 'brk', 'pd'];
+/* The server's sanitiseLink (Util.gs): sanitiseLink, plus whitespace, quotes and angle brackets removed. Used for Desk links so the
+   link shown is exactly the Link the server stores when a tick creates the row. */
+function sanitiseStoredLink(url) { return sanitiseLink(url).replace(/[\s<>"']/g, ''); }
+/* A Desk link target as a URL, exactly as the server's expandDeskLink (Desk.gs) returns it; tests/desk.test.js runs both on the
+   same inputs. The target is trimmed, then "wt:<thread id>" is an AISA Gmail thread, "w:<search>" an AISA Gmail search
+   (encodeURIComponent, %20 as +; '' when the text cannot be encoded), "p:<id>" a personal Gmail thread (prefixes are
+   case-sensitive), anything else stays as it is; the result is sanitised, so '' means "show the label as plain text". */
+function expandDeskLink(target) {
+  var s = String(target === null || target === undefined ? '' : target).trim(), url = s;
+  if (s.indexOf('wt:') === 0) url = DESK_AISA_MAIL + 'all/' + s.slice(3);
+  else if (s.indexOf('w:') === 0) { try { url = DESK_AISA_MAIL + 'search/' + encodeURIComponent(s.slice(2)).replace(/%20/g, '+'); } catch (e) { url = ''; } }
+  else if (s.indexOf('p:') === 0) url = DESK_PERSONAL_THREAD + s.slice(2);
+  return sanitiseStoredLink(url);
+}
+function deskHref(target) { return sanitiseLink(expandDeskLink(target)); }
+function deskStr(v) { return v === null || v === undefined ? '' : (typeof v === 'object' ? '' : String(v)); }
+function deskList(v) { return Array.isArray(v) ? v : []; }
+function deskIsObj(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
+/* [kind, text] tags and [label, target] links: anything that is not a 2+ element array is dropped. */
+function deskPairs(v) { return deskList(v).filter(function (p) { return Array.isArray(p) && p.length >= 2; }).map(function (p) { return [deskStr(p[0]), deskStr(p[1])]; }); }
+function deskTexts(v) { return deskList(v).map(deskStr).filter(function (s) { return cleanText(s) !== ''; }); }
+/* Work or Personal, as the server decides it (DESK.md section 2): the task prefix, else a "home" tag, else Work. */
+function deskCategoryOf(item) {
+  var prefix = deskStr(item && item.task).trim().slice(0, 2).toUpperCase(); // as the server's deskTaskTab_ reads it
+  if (prefix === 'W-') return 'Work';
+  if (prefix === 'P-') return 'Personal';
+  // any [kind, …] tag counts, even one with no text (the server reads ["home"] as ["home", ""])
+  return deskList(item && item.tags).some(function (t) { return Array.isArray(t) && deskStr(t[0]).trim().toLowerCase() === 'home'; }) ? 'Personal' : 'Work';
+}
+/* The getDesk `desk` object with every field present and of the right type, so rendering never trips over missing data
+   (the routine writes it; the web app must tolerate missing fields). Unknown lanes are not dropped here: deskLaneKey()
+   puts their items in the first lane. */
+function normaliseDesk(d) {
+  d = deskIsObj(d) ? d : {};
+  var lanes = deskList(d.lanes).filter(function (l) { return deskIsObj(l) && deskStr(l.key); })
+    .map(function (l) { return { key: deskStr(l.key), title: deskStr(l.title) || deskStr(l.key) }; });
+  if (!lanes.length) lanes = DESK_LANES.map(function (l) { return { key: l.key, title: l.title }; });
+  var agenda = deskIsObj(d.agenda) ? {
+    title: deskStr(d.agenda.title) || 'Director agenda', open: d.agenda.open === true,
+    sections: deskList(d.agenda.sections).filter(deskIsObj).map(function (s) {
+      return { name: deskStr(s.name), items: deskList(s.items).filter(deskIsObj).map(function (i) { return { t: deskStr(i.t), d: deskStr(i.d) }; }) };
+    })
+  } : null;
+  var llt = deskIsObj(d.llt) ? {
+    title: deskStr(d.llt.title) || 'LLT', padlet: deskStr(d.llt.padlet), working: deskTexts(d.llt.working), great: deskTexts(d.llt.great), night: deskTexts(d.llt.night),
+    raise: deskList(d.llt.raise).filter(deskIsObj).map(function (r) { return { t: deskStr(r.t), d: deskStr(r.d) }; })
+  } : null;
+  return {
+    built: deskStr(d.built), eyebrow: deskStr(d.eyebrow), sources: deskStr(d.sources), lanes: lanes,
+    strip: deskList(d.strip).filter(deskIsObj).map(function (s) {
+      return { cls: DESK_DAY_CLASSES.indexOf(deskStr(s.cls)) >= 0 ? deskStr(s.cls) : '', d: deskStr(s.d), t: deskStr(s.t), s: deskStr(s.s), href: deskStr(s.href) };
+    }),
+    items: deskList(d.items).filter(deskIsObj).map(function (it) {
+      return { id: deskStr(it.id), lane: deskStr(it.lane), title: deskStr(it.title), why: deskStr(it.why), tags: deskPairs(it.tags), links: deskPairs(it.links),
+        task: deskStr(it.task), category: it.category === 'Work' || it.category === 'Personal' ? it.category : deskCategoryOf(it),
+        taskId: deskStr(it.taskId), status: deskStr(it.status), done: it.done === true };
+    }),
+    cleared: deskTexts(d.cleared),
+    priorities: deskList(d.priorities).filter(deskIsObj).map(function (p) {
+      var tag = deskPairs([p.tag])[0] || null;
+      return { title: deskStr(p.title), tag: tag, points: deskTexts(p.points), links: deskPairs(p.links) };
+    }),
+    coming: deskList(d.coming).filter(deskIsObj).map(function (c) {
+      return { when: deskStr(c.when), hl: c.hl === true, title: deskStr(c.title), detail: deskStr(c.detail), href: deskStr(c.href) };
+    }),
+    agenda: agenda, llt: llt,
+    quick: deskList(d.quick).filter(Array.isArray).map(function (q) { return [deskStr(q[0]), deskStr(q[1]), deskStr(q[2])]; })
+  };
+}
+/* The lane an item is shown in: its own when that lane exists, else the first lane (as the routine's page does). */
+function deskLaneKey(lane, lanes) {
+  for (var i = 0; i < lanes.length; i++) if (lanes[i].key === lane) return lane;
+  return lanes.length ? lanes[0].key : '';
+}
+/* The meter and lane counts. items: [{lane, done}], added: [{done}] (shown in the first lane). */
+function deskCounts(lanes, items, added) {
+  var open = Object.create(null), done = 0, total = 0, first = lanes.length ? lanes[0].key : '';
+  lanes.forEach(function (l) { open[l.key] = 0; });
+  (items || []).forEach(function (it) {
+    total++;
+    if (it.done) done++;
+    else { var k = deskLaneKey(it.lane, lanes); if (k) open[k]++; }
+  });
+  (added || []).forEach(function (a) { total++; if (a.done) done++; else if (first) open[first]++; });
+  return { done: done, total: total, open: open, pct: total ? Math.round(done / total * 1000) / 10 : 0 };
+}
+function deskTagClass(kind) { return 'dk-tag' + (DESK_TAG_KINDS.indexOf(kind) >= 0 ? ' dk-tag-' + kind : ''); }
+/* "Built <built> from <sources>." (DESK.md section 3), without a doubled full stop. */
+function deskBuiltLine(desk) {
+  var built = cleanText(desk && desk.built), sources = cleanText(desk && desk.sources).replace(/\.+$/, '');
+  if (!built) return sources ? 'Built from ' + sources + '.' : '';
+  return 'Built ' + built.replace(/\.+$/, '') + (sources ? ' from ' + sources : '') + '.';
+}
+/* Shown when getDesk says stale (the build is not from today in Dubai): "This Desk is from Friday 9 Oct; …". */
+function deskStaleNote(builtDate) {
+  var p = parseYmd(builtDate);
+  var when = p ? DAYS_LONG[weekdayOf(builtDate)] + ' ' + p.d + ' ' + MONTHS[p.m - 1] : 'an earlier day';
+  return 'This Desk is from ' + when + '; the next build is at 6:45 on school days.';
+}
+/* Copy agenda as text, in the routine page's format: title, then each section in capitals with numbered "item (detail)" lines. */
+function deskAgendaToText(agenda) {
+  if (!agenda) return '';
+  var parts = [cleanText(agenda.title)];
+  (agenda.sections || []).forEach(function (s) {
+    var lines = [cleanText(s.name).toUpperCase()];
+    (s.items || []).forEach(function (i, n) { lines.push((n + 1) + '. ' + cleanText(i.t) + (cleanText(i.d) ? ' (' + cleanText(i.d) + ')' : '')); });
+    parts.push(lines.join('\n'));
+  });
+  return parts.join('\n\n');
+}
+/* Download .xlsx for the Desk agenda: one sheet "Agenda", title rows (agenda title, director), a blank row, then Section / Item / Detail.
+   Same shape as buildAgendaWorkbookRows, so downloadWorkbook() writes it (or the CSV fallback). Every cell is formula-guarded. */
+function deskAgendaWorkbookRows(agenda, opts) {
+  opts = opts || {};
+  var rows = [[formulaGuard(cleanText(agenda && agenda.title) || 'Director agenda')]];
+  if (opts.directorName) rows.push(['Director: ' + formulaGuard(cleanText(opts.directorName))]);
+  rows.push([]);
+  rows.push(['Section', 'Item', 'Detail']);
+  ((agenda && agenda.sections) || []).forEach(function (s) {
+    (s.items || []).forEach(function (i) { rows.push([formulaGuard(cleanText(s.name)), formulaGuard(cleanText(i.t)), formulaGuard(cleanText(i.d))]); });
+  });
+  return { sheetName: 'Agenda', fileName: 'desk-agenda-' + (parseYmd(opts.builtDate) ? opts.builtDate : 'draft'), rows: rows, links: [],
+    cols: [{ wch: 22 }, { wch: 60 }, { wch: 60 }] };
+}
+/* The text to paste into the LLT "Fill us in" padlet card (same headings and "* " bullets as the routine's page). */
+function deskLltText(llt) {
+  if (!llt) return '';
+  var bl = function (a) { return (a || []).map(function (x) { return '* ' + cleanText(x); }).join('\n'); };
+  return 'Working On:\n' + bl(llt.working) + '\n\nGoing Great:\n' + bl(llt.great) + '\n\nKeeping me up at night:\n' + bl(llt.night);
+}
+/* A note added after a tick joins the task's existing note the way the server's appendNote_ does (" · ", no repeat). */
+function joinNote(existing, note) {
+  var n = cleanText(note), e = String(existing || '').trim();
+  if (!n) return e;
+  if (e === n || e.slice(-(n.length + 3)) === ' · ' + n) return e;
+  return e ? e + ' · ' + n : n;
+}
 /* pure:end */
 
 /* ---------- DOM-dependent helpers ---------- */
@@ -286,9 +431,9 @@ function htmlToText(root) {
 }
 
 /* ---------- state, api, DOM utilities ---------- */
-var PAGES = ['today', 'inbox', 'import', 'agenda', 'newsletter', 'history'];
+var PAGES = ['desk', 'today', 'inbox', 'import', 'agenda', 'newsletter', 'history']; // 'today' is the Tasks tab (its hash stays #today)
 var state = {
-  booted: false, page: 'today', today: '', user: '', config: {}, projects: [], inboxNew: 0,
+  booted: false, page: 'desk', today: '', user: '', config: {}, projects: [], inboxNew: 0,
   tasks: [], search: '', qaCategory: 'Work', expanded: null, noteFor: null, draft: null, doneOpen: {},
   inbox: { status: 'New', items: [], promoting: null, chatMode: '' },
   imp: { textRows: [], htmlRows: [], htmlName: '' },
@@ -394,20 +539,22 @@ function readHash(cb) {
   } else cb(location.hash.replace(/^#/, ''));
 }
 function showPage(name) {
-  if (PAGES.indexOf(name) < 0) name = 'today';
+  if (PAGES.indexOf(name) < 0) name = 'desk'; // no hash (or an unknown one) opens the Desk
   state.page = name;
+  document.body.classList.toggle('on-desk', name === 'desk'); // the Desk's own page background (Styles.html)
   // Pages stay hidden until the bootstrap succeeds, so the spinner / "Couldn't load" card is all that shows.
   PAGES.forEach(function (p) { $('page-' + p).hidden = p !== name || !state.booted; });
   Array.prototype.forEach.call($('tabs').querySelectorAll('a'), function (a) { a.classList.toggle('active', a.getAttribute('data-page') === name); });
   if (state.booted) loadPage(name);
 }
 function navigate(name) {
-  if (PAGES.indexOf(name) < 0) name = 'today';
+  if (PAGES.indexOf(name) < 0) name = 'desk';
   try { if (location.hash.replace(/^#/, '') !== name) location.hash = name; } catch (e) { /* ignore */ }
   try { if (typeof google !== 'undefined' && google.script && google.script.history) google.script.history.replace(null, {}, name); } catch (e2) { /* ignore */ }
   if (state.page !== name || !state.booted) showPage(name);
 }
 function loadPage(name) {
+  if (name === 'desk') { if (!deskState.loaded && !deskState.loading) loadDesk(); else if (deskState.loaded) renderDesk(); } // re-entering re-reads ticks made on the Tasks page
   if (name === 'inbox' && !state.loaded.inbox) loadInbox();
   if (name === 'agenda' && !state.agenda) loadAgenda('');
   if (name === 'newsletter' && !state.loaded.newsletter) loadNewsletter();
@@ -472,7 +619,7 @@ function findTask(id) { for (var i = 0; i < state.tasks.length; i++) if (state.t
 function applyTask(task) {
   if (!task || !task.id) return null;
   var existing = findTask(task.id);
-  if (task.status === 'Dropped') { if (existing) state.tasks.splice(state.tasks.indexOf(existing), 1); return task; }
+  if (task.status === 'Dropped') { if (existing) state.tasks.splice(state.tasks.indexOf(existing), 1); deskTaskLeft(task.id, null); return task; }
   if (existing) { Object.keys(task).forEach(function (k) { existing[k] = task[k]; }); delete existing.pending; return existing; }
   state.tasks.push(task);
   return task;
@@ -670,7 +817,7 @@ function moveTaskUI(t, toCategory, d) {
   if (badLink(patch)) return;
   var saved = Object.keys(patch).length ? api('updateTask', { category: t.category, id: t.id, patch: patch }).then(function (r) { applyTask(r.task); }) : Promise.resolve();
   saved.then(function () { return api('moveTask', { category: t.category, id: t.id, toCategory: toCategory }); }).then(function (r) {
-    removeTask(t.id); applyTask(r.task); state.expanded = null; state.draft = null; renderToday();
+    removeTask(t.id); applyTask(r.task); deskTaskLeft(t.id, r.task); state.expanded = null; state.draft = null; renderToday();
     if (!focusTask(r.task.id, '.task-title')) $('qa-title').focus(); // focus follows the task into its new column
     toast('Moved to ' + toCategory + ': ' + truncate(r.task.title, 40), { type: 'ok' });
   }, toastError);
@@ -678,7 +825,7 @@ function moveTaskUI(t, toCategory, d) {
 function dropTaskUI(t, note) {
   var idx = state.tasks.indexOf(t);
   var nextId = neighbourTaskId(t.id);
-  removeTask(t.id); state.expanded = null; state.draft = null; renderToday();
+  removeTask(t.id); deskTaskLeft(t.id, null); state.expanded = null; state.draft = null; renderToday();
   if (!(nextId && focusTask(nextId, '.task-title'))) $('qa-title').focus(); // the dropped row is gone: the next task, else quick-add
   var tt;
   var p = api('dropTask', cleanPayload({ category: t.category, id: t.id, note: cleanText(note) || undefined }));
@@ -700,9 +847,468 @@ function quickAdd() {
     removeTask(tmp.id);
     var task = applyTask(r.task);
     renderToday();
+    if (!r.duplicate) deskRememberAdded(task); // a Manual task shows on the Desk under "Added by you", as getDesk would list it
     if (r.duplicate) toast('Already on your list: ' + truncate(task ? task.title : title, 48), { timeout: 6000 });
     else toast('Added to ' + category + ': ' + truncate(title, 48), { type: 'ok' });
   }, function (e) { removeTask(tmp.id); renderToday(); input.value = title; toastError(e); });
+}
+
+/* ---------- Desk (home page; docs/DESK.md section 3) ---------- */
+/* The morning build's board, read from the Desk tab with getDesk. Board items tick through setDeskItemDone (which creates the
+   tracker row first when the item has none); tasks added since the build ("Added by you": Open, Source Manual) tick through
+   completeTask / reopenTask. Every tick is optimistic, queued per card so a quick tick-untick reaches the server in order, and
+   rolled back with the error toast when the server refuses it. All text goes in through textContent, links through deskHref. */
+var deskState = {
+  loaded: false, loading: false, error: '', data: null, reason: '', message: '', builtDate: '', builtAt: '', stale: false, url: DESK_URL,
+  addedIds: [], pendingAdds: [], addCategory: 'Work', noteFor: '', noteDraft: '', agendaOpen: null, form: null, ops: Object.create(null)
+};
+var deskSeq = 0;
+function loadDesk() {
+  deskState.loading = true; deskState.error = '';
+  renderDesk();
+  api('getDesk', {}).then(function (r) {
+    deskState.loading = false; deskState.loaded = true;
+    applyDeskResponse(r || {});
+    renderDesk();
+  }, function (e) {
+    // A failed read leaves loaded false, so coming back to the tab (or Try again) asks again.
+    deskState.loading = false; deskState.loaded = false; deskState.error = errText(e);
+    renderDesk();
+  });
+}
+function applyDeskResponse(r) {
+  var ok = r.ok !== false && deskIsObj(r.desk);
+  deskState.data = ok ? normaliseDesk(r.desk) : null;
+  deskState.reason = ok ? '' : (r.reason === 'empty' ? 'empty' : 'invalid');
+  deskState.message = ok ? '' : cleanText(r.message);
+  deskState.builtDate = ok ? deskStr(r.builtDate) : '';
+  deskState.builtAt = ok ? deskStr(r.builtAt) : '';
+  deskState.stale = ok && r.stale === true;
+  deskState.url = sanitiseLink(r.deskUrl) || DESK_URL;
+  deskState.agendaOpen = null; deskState.noteFor = ''; deskState.noteDraft = ''; deskState.ops = Object.create(null);
+  // "added" tasks join state.tasks, so the Desk and the Tasks page share one object per task and show the same ticks.
+  var linked = deskLinkedIds(), ids = [];
+  deskList(r.added).forEach(function (t) {
+    var x = deskIsObj(t) && t.id ? applyTask(t) : null;
+    if (x && !linked[x.id] && ids.indexOf(x.id) < 0) ids.push(x.id);
+  });
+  var extra = deskState.addedIds.filter(function (id) { return ids.indexOf(id) < 0 && !linked[id] && findTask(id); }); // added while getDesk ran
+  deskState.addedIds = extra.concat(ids);
+}
+/* A task that left state.tasks on another page, as the next getDesk would read it: a Desk item whose row was dropped is done
+   (DESK.md 2: Dropped counts as done), and one whose row was moved follows the copy in the other list. If the drop fails or is
+   undone, the task is back in state.tasks and its own status decides again (deskItemDone). */
+function deskTaskLeft(id, copy) {
+  if (!deskState.data || !id) return;
+  deskState.data.items.forEach(function (it) {
+    if (it.taskId !== id) return;
+    if (copy && copy.id) { it.taskId = copy.id; it.category = copy.category === 'Personal' ? 'Personal' : 'Work'; it.status = copy.status; it.done = copy.status === 'Done' || copy.status === 'Dropped'; }
+    else { it.status = 'Dropped'; it.done = true; }
+  });
+}
+function deskLinkedIds() {
+  var s = Object.create(null);
+  if (deskState.data) deskState.data.items.forEach(function (it) { if (it.taskId) s[it.taskId] = true; });
+  return s;
+}
+/* Source Manual, compared as the server's deskAdded_ compares it (trimmed, any case). A task with no source yet (a pending add) counts. */
+function deskIsManual(t) { return !t.source || cleanText(t.source).toLowerCase() === 'manual'; }
+var DESK_ADDED_MAX = 20; // getDesk lists at most 20 (DESK.md section 2)
+/* A task added on the Tasks page or the Desk (Source Manual) is listed under "Added by you" until the next build folds it in. */
+function deskRememberAdded(task) {
+  if (!task || !task.id || task.status !== 'Open' || !deskIsManual(task)) return;
+  if (deskLinkedIds()[task.id] || deskState.addedIds.indexOf(task.id) >= 0) return;
+  deskState.addedIds.unshift(task.id);
+}
+/* "Added by you", as getDesk defines it: Open Manual tasks that are no board item's task. The ones already listed keep their place
+   (and stay, ticked, once done), but at most 20 of them are open (getDesk's cap): past that, the oldest open ones (by Created,
+   Updated, then ID) wait off the list until there is room. Any other such task in state.tasks (reopened from History, say) joins
+   at the end, newest first, while fewer than 20 listed tasks are open. Tasks dropped or moved on the Tasks page are no longer
+   in state.tasks, so they leave the Desk too. */
+function deskNewestFirst(a, b) { return cmpStr(b.created, a.created) || cmpStr(b.updated, a.updated) || cmpStr(b.id, a.id); }
+function deskAddedTasks() {
+  var linked = deskLinkedIds();
+  var listed = deskState.addedIds.map(findTask).filter(function (t) { return t && !linked[t.id]; });
+  var shown = Object.create(null);
+  listed.filter(function (t) { return t.status === 'Open'; }).sort(deskNewestFirst).slice(0, DESK_ADDED_MAX).forEach(function (t) { shown[t.id] = true; });
+  listed = listed.filter(function (t) { return t.status !== 'Open' || shown[t.id]; });
+  var room = DESK_ADDED_MAX - listed.filter(function (t) { return t.status === 'Open'; }).length;
+  var fresh = state.tasks.filter(function (t) {
+    return t.status === 'Open' && t.source && deskIsManual(t) && !t.pending && !linked[t.id] && deskState.addedIds.indexOf(t.id) < 0;
+  }).sort(deskNewestFirst).slice(0, Math.max(0, room));
+  deskState.addedIds = deskState.addedIds.concat(fresh.map(function (t) { return t.id; }));
+  return listed.concat(fresh);
+}
+function deskOp(key) { return deskState.ops[key] || (deskState.ops[key] = { chain: Promise.resolve(), inflight: 0, confirmed: null, intent: null }); }
+function deskBusy() {
+  for (var k in deskState.ops) if (deskState.ops[k].inflight) return true;
+  return deskState.pendingAdds.length > 0;
+}
+/* Ticked or not: while a tick is on its way the card shows what Brandon clicked; otherwise the task row decides (the Tasks page may
+   have ticked or reopened it since getDesk), and an item without a loaded row keeps what getDesk said. */
+function deskItemDone(it) {
+  var op = deskState.ops['i:' + it.id];
+  if (op && op.inflight) return it.done;
+  var t = it.taskId ? findTask(it.taskId) : null;
+  return t ? t.status === 'Done' : it.done;
+}
+function deskItemById(id) {
+  var items = deskState.data ? deskState.data.items : [];
+  for (var i = 0; i < items.length; i++) if (items[i].id === id) return items[i];
+  return null;
+}
+/* The tracker task behind a card key ("i:<item id>" or "a:<task id>"), once it exists. */
+function deskTaskForKey(key) {
+  if (key.indexOf('a:') === 0) return findTask(key.slice(2));
+  var it = deskItemById(key.slice(2));
+  return it ? ((it.taskId && findTask(it.taskId)) || it.task || null) : null;
+}
+
+function renderDesk() {
+  var root = $('desk-root');
+  if (!root) return;
+  var mark = deskFocusMark(root);
+  clear(root);
+  if (!deskState.loaded && !deskState.error) { root.appendChild(emptyEl('Loading your Desk…')); return; }
+  var d = deskState.data;
+  var lanes = d ? d.lanes : [{ key: DESK_LANES[0].key, title: DESK_LANES[0].title }];
+  var view = (d ? d.items : []).map(function (it) { return { it: it, done: deskItemDone(it), lane: deskLaneKey(it.lane, lanes) }; });
+  var added = deskAddedTasks();
+  var counts = deskCounts(lanes, view, added.map(function (t) { return { done: t.status === 'Done' }; }));
+  root.appendChild(deskHeaderEl(d, counts));
+  if (!d) root.appendChild(deskNoticeEl());
+  if (d && d.strip.length) root.appendChild(deskStripEl(d.strip));
+  root.appendChild(deskBoardEl(lanes, view, added, counts, !d));
+  if (d) {
+    root.appendChild(deskClearedEl(d.cleared));
+    root.appendChild(deskTwoEl(d));
+    if (d.agenda) root.appendChild(deskAgendaEl(d.agenda));
+    if (d.llt) root.appendChild(deskLltEl(d.llt));
+    if (d.quick.length) root.appendChild(deskQuickEl(d.quick));
+    root.appendChild(deskFootEl(d));
+  }
+  $('desk-live').textContent = counts.total ? counts.done + ' of ' + counts.total + ' done' : '';
+  deskFocusRestore(mark);
+}
+/* renderDesk() rebuilds the board, so the focused control is looked up again afterwards: the same node for the add box (it is
+   kept across renders, with its text), else the same role in the card with the same key (its checkbox when that role is gone). */
+function deskFocusMark(root) {
+  var a = document.activeElement;
+  if (!a || a === document.body || !root.contains(a)) return null;
+  if (deskState.form && deskState.form.contains(a)) return { el: a };
+  var card = a.closest ? a.closest('[data-key]') : null;
+  if (card) return { key: card.getAttribute('data-key'), role: a.getAttribute('data-role') || '' };
+  return a.id ? { id: a.id } : null;
+}
+function deskFocusRestore(m) {
+  if (!m) return;
+  var el = null;
+  if (m.el) el = m.el;
+  else if (m.key) {
+    // matched by value, not by a selector: the key holds the item id from the sheet, which no selector escaping has to survive
+    var card = Array.prototype.filter.call(document.querySelectorAll('#desk-root [data-key]'), function (c) { return c.getAttribute('data-key') === m.key; })[0];
+    el = card && ((m.role && card.querySelector('[data-role="' + m.role + '"]')) || card.querySelector('[data-role="check"]'));
+  } else if (m.id) el = $(m.id);
+  if (el && document.body.contains(el) && !el.disabled) el.focus();
+}
+function deskFocusKey(key) { deskFocusRestore({ key: key, role: 'check' }); }
+function deskLinkEl(url, label, cls, id) {
+  var u = sanitiseLink(url);
+  return u ? h('a', { href: u, target: '_blank', rel: 'noopener', class: cls || null, id: id || null }, label) : null;
+}
+/* Link pills: a target the sanitiser refuses (after wt:/w:/p: expansion) is shown as its label in plain text. */
+function deskAppendLinks(box, links) {
+  links.forEach(function (l, n) {
+    var u = deskHref(l[1]), label = cleanText(l[0]) || 'Link';
+    var text = h('span', { class: 'dk-lnk-t', text: label }); // a long label ends in an ellipsis inside the pill
+    box.appendChild(u ? h('a', { class: 'dk-lnk', href: u, target: '_blank', rel: 'noopener', data: { role: 'link-' + n } }, text)
+      : h('span', { class: 'dk-lnk dk-lnk-off' }, text));
+  });
+  return box;
+}
+function deskSecHead(title, eyebrow) {
+  return h('div', { class: 'dk-sec-h' }, [h('h2', { text: title }), eyebrow ? h('span', { class: 'dk-eyebrow', text: eyebrow }) : null]);
+}
+function deskHeaderEl(d, counts) {
+  var head = h('header', { class: 'dk-head' }, h('div', { class: 'dk-head-t' }, [
+    h('div', { class: 'dk-eyebrow', id: 'desk-eyebrow', text: d ? d.eyebrow : formatDateLong(state.today) }),
+    h('h1', { class: 'dk-h1' }, ["Brandon's ", h('span', { text: 'Desk' })])
+  ]));
+  if (d || counts.total) head.appendChild(h('div', { class: 'dk-meter' }, [
+    h('div', { class: 'dk-meter-row' }, [h('span', { text: 'Done so far' }), h('b', { id: 'desk-done', text: counts.done + ' / ' + counts.total })]),
+    h('div', { class: 'dk-bar' }, h('i', { id: 'desk-bar', style: 'width:' + counts.pct + '%' })),
+    h('span', { class: 'dk-sync', id: 'desk-sync', text: deskBusy() ? 'Saving to your tracker…' : 'Ticks and new tasks save straight to your tracker' })
+  ]));
+  return head;
+}
+/* Empty Desk tab, unreadable data, or getDesk failing: a calm panel with the Desk page link; the add box below still works. */
+function deskNoticeEl() {
+  var title, text;
+  if (deskState.error) { title = "Couldn't load the Desk"; text = deskState.error; }
+  else if (deskState.reason === 'empty') { title = 'No Desk yet'; text = 'Your Desk appears here after the next morning build (6:45 on school days), or press Rebuild now on the Desk page.'; }
+  else { title = "This Desk couldn't be read"; text = deskState.message || 'The Desk data in the sheet could not be read.'; }
+  return h('section', { class: 'dk-panel dk-notice', id: 'desk-empty', role: 'status' }, [
+    h('h2', { text: title }), h('p', { text: text }),
+    h('div', { class: 'dk-notice-actions' }, [
+      deskState.error ? h('button', { type: 'button', class: 'dk-btn', id: 'desk-retry', onclick: loadDesk }, 'Try again') : null,
+      deskLinkEl(deskState.url, 'Open the Desk page', 'dk-lnk', 'desk-open')
+    ])
+  ]);
+}
+function deskStripEl(strip) {
+  return h('nav', { class: 'dk-strip', id: 'desk-strip', 'aria-label': 'Coming days' }, strip.map(function (s) {
+    var href = deskHref(s.href), cls = 'dk-day' + (s.cls ? ' ' + s.cls : '');
+    var kids = [h('span', { class: 'dk-d', text: s.d }), h('span', { class: 'dk-t', text: s.t }), s.s ? h('span', { class: 'dk-s', text: s.s }) : null];
+    return href ? h('a', { class: cls, href: href, target: '_blank', rel: 'noopener' }, kids) : h('div', { class: cls }, kids);
+  }));
+}
+function deskBoardEl(lanes, view, added, counts, single) {
+  var board = h('section', { class: 'dk-board' + (single ? ' dk-single' : ''), id: 'desk-board', 'aria-label': 'Action board' });
+  lanes.forEach(function (l, i) {
+    var lane = h('div', { class: 'dk-lane dk-l' + (i % 3 + 1), data: { lane: l.key } });
+    lane.appendChild(h('div', { class: 'dk-lane-h' }, [h('span', { class: 'dk-dot', 'aria-hidden': 'true' }), h('h2', { text: l.title }),
+      h('span', { class: 'dk-count', text: (counts.open[l.key] || 0) + ' open' })]));
+    var body = h('div', { class: 'dk-lane-b' });
+    if (i === 0) {
+      lane.appendChild(deskAddForm());
+      deskState.pendingAdds.forEach(function (t) {
+        body.appendChild(deskCardEl({ key: 'p:' + t.id, title: t.title, why: '', tags: deskAddedTags(t), links: [], done: false, pending: true, disabled: true }));
+      });
+      added.forEach(function (t) { body.appendChild(deskAddedCard(t)); });
+    }
+    view.forEach(function (v) { if (v.lane === l.key) body.appendChild(deskItemCard(v.it, v.done)); });
+    lane.appendChild(body);
+    board.appendChild(lane);
+  });
+  return board;
+}
+function deskAddedTags(t) { var tags = [['list', 'Added by you']]; if (t.category === 'Personal') tags.push(['home', 'Personal']); return tags; }
+function deskAddedCard(t) {
+  return deskCardEl({ key: 'a:' + t.id, title: t.title, why: t.details || '', tags: deskAddedTags(t), links: sanitiseLink(t.link) ? [['Open', t.link]] : [],
+    done: t.status === 'Done', onTick: function (checked) { tickDeskAdded(t, checked); } });
+}
+function deskItemCard(it, done) {
+  return deskCardEl({ key: 'i:' + it.id, title: it.title, why: it.why, tags: it.tags, links: it.links, done: done, disabled: !it.id,
+    onTick: function (checked) { tickDeskItem(it, checked); } });
+}
+function deskCardEl(o) {
+  var id = 'dk-cb-' + (++deskSeq);
+  var card = h('div', { class: 'dk-item' + (o.done ? ' done' : '') + (o.pending ? ' pending' : ''), data: { key: o.key } });
+  var cb = h('input', { type: 'checkbox', id: id, checked: o.done, disabled: !!o.disabled, 'aria-label': 'Mark done: ' + o.title, data: { role: 'check' },
+    onchange: function () { if (o.onTick) o.onTick(cb.checked); } });
+  card.appendChild(h('label', { class: 'dk-check' }, cb)); // a 40 x 40 tap target around the 20 px box
+  card.appendChild(h('label', { class: 'dk-title', for: id, text: o.title }));
+  card.appendChild(h('div', { class: 'dk-why', text: o.why }));
+  var meta = h('div', { class: 'dk-meta' });
+  o.tags.forEach(function (t) { if (cleanText(t[1])) meta.appendChild(h('span', { class: deskTagClass(t[0]), text: t[1] })); });
+  deskAppendLinks(meta, o.links);
+  if (meta.firstChild) card.appendChild(meta);
+  if (o.done && !o.pending && deskState.noteFor === o.key) { card.classList.add('noting'); card.appendChild(deskNoteEl(o)); }
+  return card;
+}
+/* The optional one-line note under a card Brandon just ticked: Enter (or Save note) saves it with updateTask, Escape (or ×) closes it. */
+function deskNoteEl(o) {
+  var input = h('input', { type: 'text', class: 'dk-note-input', placeholder: 'Add a note on how it went (optional)', 'aria-label': 'Note for ' + o.title, maxlength: 200,
+    value: deskState.noteDraft, data: { role: 'note' }, enterkeyhint: 'done',
+    oninput: function () { deskState.noteDraft = input.value; },
+    onkeydown: function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); saveDeskNote(o.key, input.value); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeDeskNote(o.key); }
+    } });
+  return h('div', { class: 'dk-note' }, [input,
+    h('button', { type: 'button', class: 'dk-btn dk-btn-sm', data: { role: 'note-save' }, onclick: function () { saveDeskNote(o.key, input.value); } }, 'Save note'),
+    h('button', { type: 'button', class: 'dk-btn ghost dk-btn-sm dk-x', 'aria-label': 'Close the note', data: { role: 'note-close' }, onclick: function () { closeDeskNote(o.key); } }, '×')]);
+}
+function deskNoteAfterTick(key, checked) {
+  if (checked) { if (deskState.noteFor !== key) { deskState.noteFor = key; deskState.noteDraft = ''; } }
+  else if (deskState.noteFor === key) { deskState.noteFor = ''; deskState.noteDraft = ''; }
+}
+function closeDeskNote(key) {
+  if (deskState.noteFor === key) { deskState.noteFor = ''; deskState.noteDraft = ''; }
+  renderDesk(); deskFocusKey(key);
+}
+function deskClearedEl(cleared) {
+  return h('section', { class: 'dk-sec', 'aria-label': 'Cleared since last build' }, [deskSecHead('Cleared since last build', 'from your mail, chat, calendar & tracker'),
+    cleared.length ? h('div', { class: 'dk-cleared', id: 'desk-cleared' }, cleared.map(function (c) { return h('span', { text: c }); }))
+      : h('p', { class: 'dk-none', id: 'desk-cleared', text: 'Nothing cleared since the last build.' })]);
+}
+function deskTwoEl(d) {
+  var pr = h('div', { class: 'dk-panel dk-proj', id: 'desk-priorities' });
+  if (!d.priorities.length) pr.appendChild(h('p', { class: 'dk-none', text: 'No standing projects listed.' }));
+  d.priorities.forEach(function (p) {
+    var art = h('article', {}, [h('h3', {}, [p.title, p.tag && cleanText(p.tag[1]) ? h('span', { class: deskTagClass(p.tag[0]), text: p.tag[1] }) : null]),
+      p.points.length ? h('ul', {}, p.points.map(function (x) { return h('li', { text: x }); })) : null]);
+    if (p.links.length) art.appendChild(deskAppendLinks(h('div', { class: 'dk-meta' }), p.links));
+    pr.appendChild(art);
+  });
+  var tl = h('ul', { class: 'dk-tl', id: 'desk-coming' }, d.coming.map(function (c) {
+    var href = deskHref(c.href);
+    return h('li', { class: c.hl ? 'hl' : null }, [h('span', { class: 'dk-when', text: c.when }),
+      h('span', { class: 'dk-what' }, [h('b', {}, href ? h('a', { href: href, target: '_blank', rel: 'noopener' }, c.title) : c.title), c.detail ? h('span', { text: c.detail }) : null])]);
+  }));
+  return h('section', { class: 'dk-two' }, [
+    h('div', { class: 'dk-col' }, [deskSecHead('Top priorities', 'standing projects'), pr]),
+    h('div', { class: 'dk-col' }, [deskSecHead('Coming up', 'next few weeks'), h('div', { class: 'dk-panel' }, d.coming.length ? tl : h('p', { class: 'dk-none', text: 'Nothing dated coming up.' }))])
+  ]);
+}
+function deskAgendaEl(a) {
+  var det = h('details', { class: 'dk-panel dk-agenda', id: 'desk-agenda', open: deskState.agendaOpen === null ? a.open : deskState.agendaOpen,
+    ontoggle: function () { deskState.agendaOpen = det.open; } }, [
+    // the click records the new state at once: a re-render can land before the (asynchronous) toggle event
+    h('summary', { id: 'desk-agenda-summary', onclick: function () { deskState.agendaOpen = !det.open; } }, [h('h2', { text: a.title }), h('span', { class: 'dk-eyebrow', text: 'director agenda' })]),
+    h('div', { class: 'dk-ag' }, a.sections.map(function (s) {
+      return h('div', {}, [h('h3', { text: s.name }), h('ol', {}, s.items.map(function (i) { return h('li', {}, [h('b', { text: i.t }), i.d ? h('span', { text: i.d }) : null]); }))]);
+    })),
+    h('div', { class: 'dk-ag-foot' }, [
+      h('button', { type: 'button', class: 'dk-btn ghost', id: 'desk-agenda-copy', onclick: deskAgendaCopy }, 'Copy agenda as text'),
+      h('button', { type: 'button', class: 'dk-btn ghost', id: 'desk-agenda-download', onclick: deskAgendaDownload }, 'Download .xlsx')
+    ])
+  ]);
+  return det;
+}
+function deskAgendaCopy() {
+  var a = deskState.data && deskState.data.agenda;
+  if (a) copyText(deskAgendaToText(a)).then(function () { toast('Agenda copied as text', { type: 'ok' }); }, toastError);
+}
+function deskAgendaDownload() {
+  var a = deskState.data && deskState.data.agenda;
+  if (a) downloadWorkbook(deskAgendaWorkbookRows(a, { directorName: state.config.DIRECTOR_NAME, builtDate: deskState.builtDate }));
+}
+function deskLltEl(l) {
+  var text = deskLltText(l);
+  var raise = h('ol', { class: 'dk-raise', id: 'desk-llt-raise' });
+  if (l.raise.length) l.raise.forEach(function (r) { raise.appendChild(h('li', {}, [h('b', { text: r.t }), r.d ? h('span', { text: r.d }) : null])); });
+  else raise.appendChild(h('li', { class: 'none', text: 'Nothing needs the whole team this time.' }));
+  return h('section', { class: 'dk-panel dk-llt', id: 'desk-llt' }, [deskSecHead(l.title, 'LLT padlet'),
+    h('div', { class: 'dk-llt-grid' }, [
+      h('div', {}, [
+        h('div', { class: 'dk-llt-h' }, [h('h3', { text: 'Paste into your padlet card' }),
+          h('button', { type: 'button', class: 'dk-btn ghost', id: 'desk-llt-copy', onclick: function () {
+            copyText(text).then(function () { toast('Copied. Paste it as a comment on your card.', { type: 'ok' }); }, toastError);
+          } }, 'Copy'),
+          deskLinkEl(l.padlet, 'Open padlet', 'dk-lnk', 'desk-padlet')]),
+        h('pre', { class: 'dk-paste', id: 'desk-llt-text', text: text })
+      ]),
+      h('div', {}, [h('div', { class: 'dk-llt-h' }, h('h3', { text: 'Raise with the whole team' })),
+        h('p', { class: 'dk-llt-note', text: 'Only what the whole team needs to hear or decide together; the rest stays in 1:1s.' }), raise])
+    ])]);
+}
+function deskQuickEl(quick) {
+  return h('section', { class: 'dk-sec', 'aria-label': 'Quick links' }, [deskSecHead('Quick links'), h('div', { class: 'dk-quick', id: 'desk-quick' }, quick.map(function (q) {
+    var u = deskHref(q[2]), kids = [h('b', { text: q[0] }), q[1] ? h('span', { text: q[1] }) : null];
+    return u ? h('a', { class: 'dk-q', href: u, target: '_blank', rel: 'noopener' }, kids) : h('div', { class: 'dk-q off' }, kids);
+  }))]);
+}
+/* "Built … from …." and the Desk page link (for Rebuild now); when the build is not from today, a visible note says so. */
+function deskFootEl(d) {
+  var link = deskLinkEl(deskState.url, 'Open the Desk page', 'dk-open', 'desk-open');
+  var foot = h('footer', { class: 'dk-foot', id: 'desk-foot' });
+  if (deskState.stale) foot.appendChild(h('p', { class: 'dk-stale', id: 'desk-stale' }, [deskStaleNote(deskState.builtDate) + ' ', link]));
+  foot.appendChild(h('p', {}, [deskBuiltLine(d), deskState.stale ? null : ' ', deskState.stale ? null : link]));
+  return foot;
+}
+
+/* Ticks. A board item: optimistic, then setDeskItemDone (the row it returns joins state.tasks so the Tasks page agrees). */
+function tickDeskItem(it, checked) {
+  if (!it.id) return;
+  var key = 'i:' + it.id, op = deskOp(key);
+  if (!op.inflight) op.confirmed = deskItemDone(it);
+  it.done = checked; op.inflight++;
+  deskNoteAfterTick(key, checked);
+  renderDesk();
+  var tt = toast((checked ? 'Done: ' : 'Reopened: ') + truncate(it.title, 48), { type: 'ok' });
+  op.chain = op.chain.then(function () { return api('setDeskItemDone', { itemId: it.id, done: checked }); }).then(function (r) {
+    op.inflight--;
+    var t = r && r.task;
+    if (t && t.id) {
+      applyTask(t);
+      it.taskId = t.id; it.status = t.status; it.task = t;
+      op.confirmed = t.status === 'Done' || t.status === 'Dropped';
+    } else op.confirmed = checked;
+    if (!op.inflight) it.done = op.confirmed;
+    renderDesk(); renderToday();
+  }, function (e) {
+    op.inflight--;
+    tt.dismiss();
+    if (!op.inflight) { it.done = op.confirmed; if (!it.done) deskNoteAfterTick(key, false); }
+    renderDesk(); toastError(e);
+  });
+}
+/* An "Added by you" task: the same, through completeTask / reopenTask on the shared task object. */
+function tickDeskAdded(t, checked) {
+  var key = 'a:' + t.id, op = deskOp(key);
+  if (!op.inflight) op.confirmed = snapshot(t);
+  t.status = checked ? 'Done' : 'Open'; t.done = checked ? state.today : '';
+  op.intent = { status: t.status, done: t.done }; op.inflight++;
+  deskNoteAfterTick(key, checked);
+  renderDesk(); renderToday();
+  var tt = toast((checked ? 'Done: ' : 'Reopened: ') + truncate(t.title, 48), { type: 'ok' });
+  op.chain = op.chain.then(function () { return api(checked ? 'completeTask' : 'reopenTask', { category: t.category, id: t.id }); }).then(function (r) {
+    op.inflight--;
+    if (r && r.task) applyTask(r.task);
+    op.confirmed = snapshot(t);
+    if (op.inflight) { t.status = op.intent.status; t.done = op.intent.done; } // a later click is still on its way: keep showing it
+    renderDesk(); renderToday();
+  }, function (e) {
+    op.inflight--;
+    tt.dismiss();
+    if (!op.inflight) { restore(t, op.confirmed); if (t.status !== 'Done') deskNoteAfterTick(key, false); }
+    renderDesk(); renderToday(); toastError(e);
+  });
+}
+/* The note goes after the tick in the same queue, so it lands on the row the tick created or completed; it is joined to the
+   row's existing note (updateTask replaces the Note cell). A tick that failed or was undone in the meantime takes no note. */
+function saveDeskNote(key, text) {
+  var note = cleanText(text);
+  if (deskState.noteFor === key) { deskState.noteFor = ''; deskState.noteDraft = ''; }
+  renderDesk(); deskFocusKey(key);
+  if (!note) return;
+  var op = deskOp(key);
+  op.chain = op.chain.then(function () {
+    var t = deskTaskForKey(key);
+    if (!t || t.status !== 'Done') return null;
+    return api('updateTask', { category: t.category, id: t.id, patch: { note: joinNote(t.note, note) } }).then(function (r) {
+      applyTask(r.task); renderToday();
+      toast('Note saved: ' + truncate(r.task.title, 40), { type: 'ok' });
+    });
+  }).then(null, function (e) {
+    toastError(e);
+    if (!deskState.noteFor) { deskState.noteFor = key; deskState.noteDraft = note; renderDesk(); } // give the text back for another try
+  });
+}
+
+/* The add box heading the first lane: kept as one DOM node across renders, so its text and focus survive a re-render. */
+function deskAddForm() {
+  if (deskState.form) return deskState.form;
+  var input = h('input', { type: 'text', id: 'desk-add-title', class: 'dk-add-input', placeholder: 'Add a task to the desk', 'aria-label': 'Add a task to the desk',
+    maxlength: 140, autocomplete: 'off', enterkeyhint: 'done' });
+  var seg = segEl(deskState.addCategory, function (c) { deskState.addCategory = c; });
+  seg.id = 'desk-add-category'; seg.className += ' dk-seg'; seg.setAttribute('aria-label', 'Add to Work or Personal');
+  // DOM order = visual order at every width (input, Add, then the toggle, which wraps under them on a phone), so Tab follows what is seen.
+  deskState.form = h('form', { class: 'dk-add', id: 'desk-add', autocomplete: 'off', onsubmit: function (e) { e.preventDefault(); deskAdd(); } },
+    [input, h('button', { type: 'submit', class: 'dk-btn', id: 'desk-add-go' }, 'Add'), seg]);
+  return deskState.form;
+}
+function deskAdd() {
+  var input = $('desk-add-title'), title = cleanText(input.value);
+  if (!title) { input.focus(); return; }
+  var category = deskState.addCategory;
+  var tmp = { id: 'tmp-' + String(Math.random()).slice(2), category: category, title: title, status: 'Open', source: 'Manual', pending: true };
+  deskState.pendingAdds.unshift(tmp);
+  input.value = '';
+  renderDesk();
+  function dropTmp() { deskState.pendingAdds = deskState.pendingAdds.filter(function (x) { return x !== tmp; }); }
+  api('addTask', { category: category, title: title }).then(function (r) {
+    dropTmp();
+    var task = applyTask(r.task);
+    if (r.duplicate) toast('Already on your list: ' + truncate(task ? task.title : title, 48), { timeout: 6000 });
+    else { deskRememberAdded(task); toast('Added to ' + category + ': ' + truncate(title, 48), { type: 'ok' }); }
+    renderDesk(); renderToday();
+  }, function (e) {
+    dropTmp(); renderDesk();
+    if (!cleanText(input.value)) input.value = title; // give the title back for a retry, unless a new one is being typed
+    toastError(e);
+  });
 }
 
 /* ---------- Inbox ---------- */
@@ -1199,7 +1805,7 @@ function init() {
   });
   $('nl-download').addEventListener('click', function () { downloadWorkbook(buildNewsletterWorkbookRows(state.nl.tasks, { from: state.nl.from, to: state.nl.to })); });
   $('history-filters').addEventListener('submit', function (e) { e.preventDefault(); loadHistory(); });
-  readHash(function (hash) { showPage(hash || 'today'); boot(); });
+  readHash(function (hash) { showPage(hash || 'desk'); boot(); });
 }
 init();
 </script>

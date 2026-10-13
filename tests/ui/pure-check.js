@@ -154,7 +154,116 @@ function run() {
   assert.notEqual(p.importTitleKey('x'.repeat(150)), p.normaliseTitleKey('x'.repeat(150)));
   assert.equal(p.importTitleKey('  Call   mum !!'), 'call mum');
   assert.equal(p.importTitleKey('Re: Email the Parents!'), 'email the parents');
+  deskChecks(p);
   console.log('pure-check: ok (' + Object.keys(p).filter((k) => typeof p[k] === 'function').length + ' helpers)');
+}
+
+/* The Desk helpers (docs/DESK.md). Fixture text is fictional. */
+function deskChecks(p) {
+  const AW = 'https://mail.google.com/mail/?authuser=bbaki%40aisa.sch.ae#';
+  const PT = 'https://mail.google.com/mail/?authuser=brandon.abaki@gmail.com#all/thread-f:';
+  // link targets: the same rules as the server (DESK.md section 1), then the http/https sanitiser
+  assert.equal(p.expandDeskLink('wt:18f3a1b2c3d4e5f6'), AW + 'all/18f3a1b2c3d4e5f6');
+  assert.equal(p.expandDeskLink('  wt:abc  '), AW + 'all/abc');
+  assert.equal(p.expandDeskLink('w:subject:(mentor rota) newer_than:7d'), AW + 'search/subject%3A(mentor+rota)+newer_than%3A7d');
+  assert.equal(p.expandDeskLink('w:a+b & c/d'), AW + 'search/a%2Bb+%26+c%2Fd'); // a literal "+" stays encoded, spaces become "+"
+  assert.equal(p.expandDeskLink('p:1812345678901234567'), PT + '1812345678901234567');
+  assert.equal(p.expandDeskLink(' https://docs.example.com/d/1 '), 'https://docs.example.com/d/1');
+  assert.equal(p.expandDeskLink(null), '');
+  assert.equal(p.expandDeskLink(undefined), '');
+  assert.equal(p.expandDeskLink('W:upper case is not a prefix'), ''); // not a prefix, and not a URL either: sanitised away, as on the server
+  assert.equal(p.expandDeskLink(' https://docs.example.com/a b"c<d> '), 'https://docs.example.com/abcd'); // the server's sanitiseLink rule
+  assert.equal(p.expandDeskLink('w:\ud800'), ''); // a lone surrogate cannot be encoded: no link (and no exception)
+  assert.equal(p.sanitiseStoredLink(' https://x.example/a\u0001 b '), 'https://x.example/ab');
+  assert.equal(p.sanitiseStoredLink('javascript:alert(1)'), '');
+  assert.equal(p.deskHref('wt:abc'), AW + 'all/abc');
+  assert.equal(p.deskHref('p:42'), PT + '42');
+  assert.equal(p.deskHref('http://example.com'), 'http://example.com');
+  ['javascript:alert(1)', ' JavaScript:alert(1)', 'data:text/html,x', 'vbscript:x', '//evil.example', 'ftp://x.example', 'W:abc', 'mailto:a@b.c', '', null, 42, {}].forEach((bad) =>
+    assert.equal(p.deskHref(bad), '', 'deskHref(' + JSON.stringify(bad) + ')'));
+  // categories as the server decides them
+  assert.equal(p.deskCategoryOf({ task: 'W-abc12345', tags: [['home', 'Personal']] }), 'Work');
+  assert.equal(p.deskCategoryOf({ task: 'P-abc12345' }), 'Personal');
+  assert.equal(p.deskCategoryOf({ tags: [['due', 'Today'], ['home', 'Personal']] }), 'Personal');
+  assert.equal(p.deskCategoryOf({ tags: 'not a list' }), 'Work');
+  assert.equal(p.deskCategoryOf(null), 'Work');
+  // normaliseDesk: everything missing
+  const empty = p.normaliseDesk(undefined);
+  eq(empty.lanes, [{ key: 'now', title: 'Do today' }, { key: 'reply', title: 'Reply & follow up' }, { key: 'later', title: 'This week' }]);
+  eq([empty.strip, empty.items, empty.cleared, empty.priorities, empty.coming, empty.quick, empty.agenda, empty.llt, empty.built], [[], [], [], [], [], [], null, null, '']);
+  // normaliseDesk: wrong types everywhere are tolerated
+  const n = p.normaliseDesk({
+    built: 'Mon 12 Oct, 6:45am', eyebrow: 7, sources: null, lanes: [{ key: '' }, 'x', { key: 'now', title: '' }, { key: 'later', title: 'Later' }],
+    strip: [{ cls: 'now', d: 'Mon 12', t: 'A', s: 'B', href: 'https://cal.example/1' }, { cls: 'evil" onclick="x', d: 'Tue 13' }, 'no'],
+    items: [{ id: 'a1', lane: 'now', title: 'One', why: 'Why', tags: [['late', 'Since Fri 9'], ['solo'], 'x', ['', 'Email', 'extra']], links: [['Doc', 'wt:1'], ['label only']], task: 'P-x', done: 'yes' },
+      'not an object', null, { title: 'No id', lane: 'nowhere', tags: 'nope', links: {}, done: true, category: 'Martian' }],
+    cleared: ['Sent it', '', '   ', null, 3],
+    priorities: [{ title: 'Hub', tag: ['due', 'Tue 13'], points: ['a', ''], links: [['Plan', 'https://x.example']] }, { title: 'Club', tag: 'bad', points: 'bad' }],
+    coming: [{ when: 'Tue 13', hl: 1, title: 'Meet', detail: '', href: 'javascript:alert(1)' }, { when: 'Wed 14', hl: true, title: 'PD' }],
+    agenda: { title: '', open: 'true', sections: [{ name: 'Done', items: [{ t: 'X', d: 'Y' }, 'bad'] }, 'bad'] },
+    llt: { padlet: 'https://padlet.example/x', working: ['a', ''], great: 'bad', raise: [{ t: 'R', d: 'D' }, 'bad'] },
+    quick: [['Sheet', 'Tracker', 'https://docs.example/s'], 'bad', ['Only title']]
+  });
+  eq(n.lanes, [{ key: 'now', title: 'now' }, { key: 'later', title: 'Later' }]);
+  eq(n.strip.map((s) => s.cls), ['now', '']);
+  assert.equal(n.eyebrow, '7'); assert.equal(n.sources, '');
+  assert.equal(n.items.length, 2);
+  eq(n.items[0], { id: 'a1', lane: 'now', title: 'One', why: 'Why', tags: [['late', 'Since Fri 9'], ['', 'Email']], links: [['Doc', 'wt:1']], task: 'P-x', category: 'Personal', taskId: '', status: '', done: false });
+  eq([n.items[1].id, n.items[1].tags, n.items[1].links, n.items[1].done, n.items[1].category], ['', [], [], true, 'Work']);
+  eq(n.cleared, ['Sent it', '3']);
+  eq(n.priorities, [{ title: 'Hub', tag: ['due', 'Tue 13'], points: ['a'], links: [['Plan', 'https://x.example']] }, { title: 'Club', tag: null, points: [], links: [] }]);
+  eq(n.coming.map((c) => [c.title, c.hl, c.href]), [['Meet', false, 'javascript:alert(1)'], ['PD', true, '']]);
+  eq(n.agenda, { title: 'Director agenda', open: false, sections: [{ name: 'Done', items: [{ t: 'X', d: 'Y' }] }] });
+  eq(n.llt, { title: 'LLT', padlet: 'https://padlet.example/x', working: ['a'], great: [], night: [], raise: [{ t: 'R', d: 'D' }] });
+  eq(n.quick, [['Sheet', 'Tracker', 'https://docs.example/s'], ['Only title', '', '']]);
+  // lanes and counts: an item in an unknown lane counts (and shows) in the first lane; added tasks count in the first lane
+  const lanes = [{ key: 'now' }, { key: 'reply' }, { key: 'later' }];
+  assert.equal(p.deskLaneKey('reply', lanes), 'reply');
+  assert.equal(p.deskLaneKey('nowhere', lanes), 'now');
+  assert.equal(p.deskLaneKey('x', []), '');
+  eq(p.deskCounts(lanes, [{ lane: 'now', done: false }, { lane: 'now', done: true }, { lane: 'nowhere', done: false }, { lane: 'later', done: true }, { lane: 'reply', done: false }],
+    [{ done: false }, { done: true }]), { done: 3, total: 7, open: { now: 3, reply: 1, later: 0 }, pct: 42.9 });
+  eq(p.deskCounts(lanes, [], []), { done: 0, total: 0, open: { now: 0, reply: 0, later: 0 }, pct: 0 });
+  // tag classes are whitelisted (the kind is sheet data)
+  assert.equal(p.deskTagClass('late'), 'dk-tag dk-tag-late');
+  assert.equal(p.deskTagClass('gh'), 'dk-tag dk-tag-gh');
+  assert.equal(p.deskTagClass(''), 'dk-tag');
+  assert.equal(p.deskTagClass('x" onclick="alert(1)'), 'dk-tag');
+  // footer lines
+  assert.equal(p.deskBuiltLine({ built: 'Mon 12 Oct, 6:45am Gulf time', sources: 'your calendar and Gmail.' }), 'Built Mon 12 Oct, 6:45am Gulf time from your calendar and Gmail.');
+  assert.equal(p.deskBuiltLine({ built: 'Mon 12 Oct', sources: '' }), 'Built Mon 12 Oct.');
+  assert.equal(p.deskBuiltLine({ built: '', sources: '' }), '');
+  assert.equal(p.deskStaleNote('2026-10-09'), 'This Desk is from Friday 9 Oct; the next build is at 6:45 on school days.');
+  assert.equal(p.deskStaleNote('2026-12-31'), 'This Desk is from Thursday 31 Dec; the next build is at 6:45 on school days.');
+  assert.equal(p.deskStaleNote(''), 'This Desk is from an earlier day; the next build is at 6:45 on school days.');
+  // agenda: copy as text (the routine page's format) and the workbook rows
+  const agenda = { title: 'Tue 13 Oct · Director', open: true, sections: [
+    { name: 'Done', items: [{ t: 'Mentors on board', d: 'Eight in the space' }, { t: 'Calendar sent', d: '' }] },
+    { name: 'Decisions & questions', items: [{ t: '=Still mine?', d: '+18 sign-ups' }, { t: 'Anything  from\nyour side?', d: '' }] },
+    { name: 'Empty', items: [] }] };
+  assert.equal(p.deskAgendaToText(agenda), 'Tue 13 Oct · Director\n\nDONE\n1. Mentors on board (Eight in the space)\n2. Calendar sent\n\nDECISIONS & QUESTIONS\n1. =Still mine? (+18 sign-ups)\n2. Anything from your side?\n\nEMPTY');
+  assert.equal(p.deskAgendaToText(null), '');
+  const wb = p.deskAgendaWorkbookRows(agenda, { directorName: 'Dr Sam Example', builtDate: '2026-10-12' });
+  assert.equal(wb.sheetName, 'Agenda');
+  assert.equal(wb.fileName, 'desk-agenda-2026-10-12');
+  eq(wb.rows, [['Tue 13 Oct · Director'], ['Director: Dr Sam Example'], [], ['Section', 'Item', 'Detail'],
+    ['Done', 'Mentors on board', 'Eight in the space'], ['Done', 'Calendar sent', ''], ['Decisions & questions', ' =Still mine?', ' +18 sign-ups'], ['Decisions & questions', 'Anything from your side?', '']]);
+  eq(wb.links, []);
+  assert.equal(wb.cols.length, 3);
+  const wb2 = p.deskAgendaWorkbookRows({ title: '@title', sections: [] }, {});
+  eq(wb2.rows, [[' @title'], [], ['Section', 'Item', 'Detail']]);
+  assert.equal(wb2.fileName, 'desk-agenda-draft');
+  assert.equal(p.csvFromRows(wb.rows).split('\r\n')[6], 'Decisions & questions, =Still mine?, +18 sign-ups'); // the CSV fallback stays guarded
+  // LLT paste text
+  assert.equal(p.deskLltText({ working: ['Hub launch', 'PD  day'], great: ['Mentors'], night: [] }), 'Working On:\n* Hub launch\n* PD day\n\nGoing Great:\n* Mentors\n\nKeeping me up at night:\n');
+  assert.equal(p.deskLltText(null), '');
+  // a note after a tick joins the existing note as the server's appendNote_ does
+  assert.equal(p.joinNote('', ' Sent  it '), 'Sent it');
+  assert.equal(p.joinNote('Called', 'Booked Tue'), 'Called · Booked Tue');
+  assert.equal(p.joinNote('Called · Booked Tue', 'Booked Tue'), 'Called · Booked Tue');
+  assert.equal(p.joinNote('Booked Tue', 'Booked Tue'), 'Booked Tue');
+  assert.equal(p.joinNote('Called', '   '), 'Called');
+  assert.equal(p.DESK_URL, 'https://claude.ai/artifact/3mG2UW54W6WkRFMAqkqxzr');
 }
 
 if (require.main === module) {

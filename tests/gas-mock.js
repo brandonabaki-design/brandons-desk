@@ -21,9 +21,10 @@ const HEADERS = {
   Inbox: ['ID', 'Captured', 'Source', 'From', 'Subject', 'Snippet', 'Link', 'Source key', 'Status', 'Task ID', 'Category hint'],
   Agenda: ['Week of', 'Section', 'Order', 'Item', 'Detail', 'Link', 'Task ID', 'Generated'],
   Config: ['Key', 'Value', 'Notes'],
-  Log: ['Time', 'Function', 'Level', 'Message']
+  Log: ['Time', 'Function', 'Level', 'Message'],
+  Desk: ['Key', 'JSON', 'Built']
 };
-const TAB_ORDER = ['Work', 'Personal', 'Inbox', 'Agenda', 'Config', 'Log'];
+const TAB_ORDER = ['Work', 'Personal', 'Inbox', 'Agenda', 'Config', 'Log', 'Desk'];
 
 // ---------------------------------------------------------------------------
 // Utilities.formatDate — Java SimpleDateFormat subset over Intl
@@ -655,7 +656,7 @@ function createMock(options) {
     oauthToken: 'mock-oauth-token'
   };
 
-  // --- default spreadsheet with the six tabs and headers -------------------
+  // --- default spreadsheet with the seven tabs and headers (Desk empty) -----
   function buildSpreadsheet(id, name, withTabs) {
     const ss = new MockSpreadsheet(state, id, name);
     if (withTabs) {

@@ -14,7 +14,7 @@ Brandon prefers the layout of the Desk that his Claude routine ("Brandon's Desk 
 - A Google Sheets cell holds at most 50 000 characters. `items` is split by whole items into `items`, `items2`, `items3`, … so that every cell stays under 45 000 characters; the web app concatenates them in key order (`items`, `items2`, `items3`, … numerically).
 - The routine rewrites rows 2+ on every build (clear `Desk!A2:C`, then write all rows in one call). Nothing else writes this tab. Row order does not matter; keys are unique.
 - Every value starts with `{`, `[`, `"`, or is `null`, so Sheets never parses it as a formula or a number.
-- `setup()` / `ensureSchema()` create the tab with this header row and column B formatted as text when it is missing. `healSheet` never touches it.
+- `setup()` / `ensureSchema()` create the tab with this header row and column B formatted as text when it is missing; `getDesk` creates it too on its first read. The tab must exist before the routine's first write to `Desk!A2:C`, so after the release that adds the Desk, open the web app once (or run `setup`) before the next morning build. `healSheet` never touches it.
 
 ### `desk-data` shapes (as produced by the routine; the web app must tolerate missing fields)
 
@@ -44,6 +44,18 @@ Same conventions as SPEC section 5 (one plain object in, JSON-safe object out, `
 | `setDeskItemDone` | `{itemId, done:boolean, note?}` | `{task}` | Finds the item in the Desk tab by `itemId` (user error "That Desk item is no longer on the Desk" if absent). Resolves its row like `getDesk`. If there is no row, creates one first with `createTasks` semantics: category as above, Title = item title, Details = item why, Link = first link expanded and sanitised, Source = `Gmail` for a `["","Email"]` tag, `Chat`, `Calendar`, `Manual` for `Added by you`, else `Claude`; Due from a `due`/`late` tag resolved against today like the routine does (blank if not resolvable); Priority High when lane `now` and tagged late or due today, else Normal; Source key `desk:<itemId>`. Then `done:true` → `completeTask` (note optional), `done:false` → `reopenTask`. Returns the task. |
 
 The Desk's own add box calls the existing `addTask({category, title})` (Source `Manual`), so the routine folds the task onto the Desk at its next build, and `getDesk` shows it under `added` right away.
+
+Details settled during the build (they refine the table above; `tests/desk.test.js` and `tests/e2e.js` pin them):
+
+- `{ok:false}` answers also carry `deskUrl` and `added`, so the empty and invalid panels keep the Desk page link and the tasks added since the build.
+- When a row matches, the item's `category` is the tab that row is in (a `desk:<id>` row found in the other tab gives that tab). A row that `moveTask` dropped ("Moved to <id>") stands for its copy, so a task moved to the other list does not read as done.
+- `added` is sorted by Created, then Updated, then row, newest first. When the client lists more of them locally (a task reopened on another page), it applies the same filter (Open, Source `Manual` in any case, not an item's row) and the same cap of 20 open tasks.
+- Create-on-tick goes through `createTasks`, so its dedupe applies: a similar Open task without a Source key becomes the item's row and is given `desk:<itemId>`. A similar task that already belongs to something else (another Source key, or another Desk item's row) is never claimed; the item gets a row of its own. Link = the first link that `expandDeskLink` turns into a URL. Due: "Today", "Tomorrow", "Yesterday" and `yyyy-MM-dd` directly; otherwise the weekday, day of the month and optional month in the tag (times and durations ignored) are matched against the dates within 7 days of today (Dubai), nearest first; a weekday alone prefers today or later for `due` and today or earlier for `late`. Nothing matching (e.g. "Overdue", or a date more than 7 days away) leaves Due blank.
+- Column C (Built) is formatted as plain text too, so it reads back exactly as written; a Built cell that Sheets turned into a date-time is read in Dubai time.
+- Only rows whose Built is the newest one are read (all rows when no row has a Built), so rows left by a build whose clear did not run never mix in; a key written twice (`items` and `items1` count as one) keeps its first row, and an item whose id an earlier item already has is left out. Skipped rows are logged as a WARN by key and row. The ERROR for a JSON cell that does not parse names the key, row and length, never the cell's text.
+- A `task` ID is matched with its prefix upper-cased (`p-…` finds `P-…`). Numbers glued to a letter or after words such as "period" or "grade" ("Thu P3", "Grade 7 reports Thu") are not the day of the month in a due tag.
+- `setDeskItemDone` wants `itemId` as text (at most 200 characters), `done` as true/false (or the "true"/"false" text every other boolean input accepts) and `note`, when given, as text.
+- `expandDeskLink` exists on both sides with identical output for every input (the server's in `Desk.gs`, the client's in the `App.html` pure block). Both sanitise with the server's `sanitiseLink` rule: an http(s) URL with whitespace, control characters, quotes and angle brackets removed, else `''`; a `w:` search that cannot be encoded gives `''`.
 
 ## 3. Web UI
 

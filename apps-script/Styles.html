@@ -80,10 +80,16 @@ button { font: inherit; }
 @media (max-width: 640px) {
   .topbar-inner { flex-wrap: wrap; gap: 0; padding-bottom: 0; }
   .brand { padding: 12px 0 6px; }
-  .tabs { margin-left: -16px; margin-right: -16px; width: calc(100% + 32px); padding: 0 12px; gap: 0; }
-  .tabs a { padding: 9px 5px 10px; font-size: 13px; gap: 4px; } /* 40 px tall tap target on phones */
+  .tabs { margin-left: -16px; margin-right: -16px; width: calc(100% + 32px); padding: 0 6px; gap: 0; justify-content: space-between; }
+  .tabs a { padding: 9px 4px 10px; font-size: 13px; gap: 3px; } /* 40 px tall tap target on phones */
   .tab-long { display: none; }
   .count { font-size: 10.5px; padding: 1px 5px; }
+}
+/* Seven tabs on the narrowest phones (360-380 px): a little smaller so all of them stay in view. */
+@media (max-width: 380px) {
+  .tabs { padding: 0 4px; }
+  .tabs a { padding: 9px 3px 10px; font-size: 12px; min-height: 40px; }
+  .count { font-size: 10px; padding: 1px 4px; }
 }
 
 /* Page frame */
@@ -282,4 +288,202 @@ details.group[open] > summary h3::before { content: "▾ "; }
 .toast .act { font: inherit; font-weight: 700; background: transparent; border: 1px solid currentColor; color: inherit; border-radius: 6px; padding: 4px 14px; min-height: 40px; margin: -10px 0; cursor: pointer; }
 .toast .x { font: inherit; background: transparent; border: 0; color: inherit; cursor: pointer; opacity: 0.7; padding: 0; display: inline-flex; align-items: center; justify-content: center; min-width: 40px; min-height: 40px; margin: -10px -10px -10px 0; }
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* ======================================================================================================
+   Desk page (docs/DESK.md section 3): the layout, fonts and colours of the morning build's Desk page.
+   Its tokens are --dk-* and its classes .dk-*, used only under .desk, so the other pages keep their look.
+   ====================================================================================================== */
+:root {
+  --dk-bg: #F4F3F8; --dk-surface: #FFFFFF; --dk-ink: #1A1530; --dk-muted: #625C78; --dk-line: #E1DEEB;
+  --dk-accent: #3B1E8F; --dk-accent-soft: #ECE7FA; --dk-gold: #B4831B; --dk-gold-soft: #FBF1DA;
+  --dk-urgent: #C2412D; --dk-urgent-soft: #FBE8E4; --dk-warn: #A86A00; --dk-warn-soft: #FDF0D6;
+  --dk-ok: #2F7A4F; --dk-ok-soft: #E3F3E9; --dk-info: #22609E; --dk-info-soft: #E3EEF9;
+  --dk-display: "Bricolage Grotesque", "DM Sans", system-ui, sans-serif;
+  --dk-body: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --dk-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --dk-bg: #13111C; --dk-surface: #1C1929; --dk-ink: #EEEBF7; --dk-muted: #A49FB9; --dk-line: #2E2A40;
+    --dk-accent: #B9A5FF; --dk-accent-soft: #2A2343; --dk-gold: #E2B85A; --dk-gold-soft: #33291A;
+    --dk-urgent: #F08A75; --dk-urgent-soft: #3A1F1B; --dk-warn: #F0BE5E; --dk-warn-soft: #352914;
+    --dk-ok: #7CCB9C; --dk-ok-soft: #1A3326; --dk-info: #8DBDF0; --dk-info-soft: #1A2A3D;
+  }
+}
+body.on-desk { background: var(--dk-bg); }
+/* The Desk uses the routine page's wider frame (1240 px, 20 px gutters) on a desktop; the top bar keeps the app's frame. */
+@media (min-width: 641px) { body.on-desk .main { max-width: 1240px; padding-left: 20px; padding-right: 20px; } }
+.desk { font-family: var(--dk-body); color: var(--dk-ink); }
+.dk-wrap { display: grid; gap: 28px; padding: 8px 0 40px; min-width: 0; }
+.dk-wrap > * { min-width: 0; }
+.desk a { color: var(--dk-accent); }
+.desk a:focus-visible, .desk button:focus-visible, .desk input:focus-visible, .desk summary:focus-visible { outline: 2px solid var(--dk-accent); outline-offset: 2px; }
+/* the app's global h2/h3 (sizes, uppercase h3) do not apply here */
+.desk h1, .desk h2, .desk h3 { font-family: var(--dk-display); text-wrap: balance; margin: 0; line-height: 1.45; color: inherit; text-transform: none; letter-spacing: normal; }
+.desk .empty { color: var(--dk-muted); }
+.dk-eyebrow { font-family: var(--dk-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dk-muted); }
+.dk-none { margin: 0; font-size: 13.5px; color: var(--dk-muted); }
+
+/* Header + done meter */
+.dk-head { display: flex; flex-wrap: wrap; gap: 16px 32px; align-items: flex-end; justify-content: space-between; }
+.dk-head-t { display: grid; gap: 8px; min-width: 0; }
+.desk .dk-h1 { font-size: clamp(30px, 5vw, 46px); font-weight: 800; letter-spacing: -.02em; line-height: 1; }
+.dk-h1 span { color: var(--dk-accent); }
+.dk-meter { display: grid; gap: 6px; min-width: 220px; flex: 0 1 300px; }
+.dk-meter-row { display: flex; justify-content: space-between; font-size: 13px; color: var(--dk-muted); }
+.dk-meter-row b { color: var(--dk-ink); font-variant-numeric: tabular-nums; }
+.dk-bar { height: 10px; border-radius: 99px; background: var(--dk-line); overflow: hidden; }
+.dk-bar i { display: block; height: 100%; width: 0; background: var(--dk-ok); border-radius: 99px; transition: width .3s; }
+.dk-sync { font-size: 12px; color: var(--dk-muted); }
+
+/* Date strip (scrolls sideways inside itself on a phone, never the page) */
+.dk-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+.dk-day { flex: 1 0 128px; background: var(--dk-surface); border: 1px solid var(--dk-line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 2px; text-decoration: none; color: var(--dk-ink); }
+.desk a.dk-day { color: var(--dk-ink); }
+.dk-day .dk-d { font-family: var(--dk-mono); font-size: 11px; color: var(--dk-muted); text-transform: uppercase; letter-spacing: .06em; }
+.dk-day .dk-t { font-weight: 700; font-size: 14px; }
+.dk-day .dk-s { font-size: 12px; color: var(--dk-muted); }
+.dk-day.now, .desk a.dk-day.now { background: var(--dk-accent); border-color: var(--dk-accent); color: var(--dk-surface); }
+.dk-day.now .dk-d, .dk-day.now .dk-s { color: var(--dk-surface); opacity: .85; }
+.dk-day.brk { background: var(--dk-gold-soft); border-color: transparent; }
+.dk-day.pd { background: var(--dk-info-soft); border-color: transparent; }
+
+/* Three-lane board: 3 columns, then the first lane over two, then one column (as the routine's page) */
+.dk-board { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 1000px) { .dk-board { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .dk-board .dk-l1 { grid-column: 1 / -1; } }
+@media (max-width: 680px) { .dk-board { grid-template-columns: minmax(0, 1fr); } }
+.dk-board.dk-single { grid-template-columns: minmax(0, 620px); }
+.dk-lane, .dk-lane-b { display: grid; gap: 10px; min-width: 0; }
+.dk-lane-h { display: flex; align-items: center; gap: 10px; padding-bottom: 6px; border-bottom: 2px solid var(--dk-ink); }
+.desk .dk-lane-h h2 { font-size: 20px; font-weight: 800; }
+.dk-count { margin-left: auto; font-family: var(--dk-mono); font-size: 12px; color: var(--dk-muted); white-space: nowrap; }
+.dk-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.dk-l1 .dk-dot { background: var(--dk-urgent); }
+.dk-l2 .dk-dot { background: var(--dk-warn); }
+.dk-l3 .dk-dot { background: var(--dk-info); }
+
+/* Item cards */
+.dk-item { background: var(--dk-surface); border: 1px solid var(--dk-line); border-radius: 12px; padding: 12px 14px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; min-width: 0; }
+.dk-item.done { opacity: .5; }
+.dk-item.done .dk-title { text-decoration: line-through; }
+.dk-item.pending { opacity: .6; }
+/* The 20 px checkbox sits in a 40 x 40 label; the negative margins keep the card exactly as the routine's page lays it out. */
+.dk-check { grid-row: span 3; align-self: start; display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; margin: -8px -10px -10px; cursor: pointer; }
+.dk-check input { width: 20px; height: 20px; margin: 0; accent-color: var(--dk-ok); cursor: pointer; }
+.dk-check input:disabled { cursor: default; }
+.dk-title { font-weight: 700; font-size: 15px; line-height: 1.3; cursor: pointer; overflow-wrap: anywhere; }
+.dk-why { color: var(--dk-muted); font-size: 13.5px; min-width: 0; overflow-wrap: anywhere; }
+.dk-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; min-width: 0; }
+.dk-tag { font-family: var(--dk-mono); font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; padding: 2px 7px; border-radius: 6px; background: var(--dk-accent-soft); color: var(--dk-accent); max-width: 100%; overflow-wrap: anywhere; }
+.dk-tag-list { background: var(--dk-gold-soft); color: var(--dk-gold); }
+.dk-tag-late { background: var(--dk-urgent-soft); color: var(--dk-urgent); }
+.dk-tag-due { background: var(--dk-warn-soft); color: var(--dk-warn); }
+.dk-tag-gh { background: var(--dk-line); color: var(--dk-ink); }
+.dk-tag-home { background: var(--dk-ok-soft); color: var(--dk-ok); }
+.dk-tag-new { background: var(--dk-info-soft); color: var(--dk-info); }
+/* Link pills: the transparent ::before gives each a 40 px tall tap target without changing how the row looks. */
+.dk-lnk { position: relative; display: inline-flex; align-items: baseline; max-width: 100%; font-size: 12.5px; font-weight: 700; line-height: 1.45; text-decoration: none; padding: 3px 9px; border-radius: 99px; border: 1px solid var(--dk-line); color: var(--dk-accent); background: var(--dk-bg); white-space: nowrap; }
+.dk-lnk-t { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.desk a.dk-lnk { color: var(--dk-accent); }
+.dk-lnk::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 40px; transform: translateY(-50%); }
+.dk-lnk:hover { border-color: var(--dk-accent); }
+a.dk-lnk::after { content: "↗"; margin-left: .28em; font-weight: 500; flex: none; }
+.dk-lnk.dk-lnk-off { color: var(--dk-muted); font-weight: 500; }
+.dk-lnk.dk-lnk-off::before { content: none; }
+/* Plain inline links (Coming up titles, the footer's Open the Desk page) get the same transparent 40 px hit area. */
+.dk-what a, .dk-open { position: relative; }
+.dk-what a::before, .dk-open::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 40px; transform: translateY(-50%); }
+
+/* Note field under a ticked card */
+.dk-note { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; min-width: 0; }
+.dk-note-input { flex: 1 1 160px; min-width: 0; font: inherit; font-size: 14px; padding: 8px 10px; min-height: 40px; border-radius: 10px; border: 1px solid var(--dk-line); background: var(--dk-surface); color: var(--dk-ink); }
+/* While its note field is open, a ticked card dims everything but the field (opacity on the card would fade the field too). */
+.dk-item.done.noting { opacity: 1; }
+.dk-item.done.noting > :not(.dk-note) { opacity: .5; }
+
+/* Add box (heads the first lane) */
+.dk-add { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Input, Add, then the Work/Personal toggle, in DOM order too (App.html deskAddForm), so Tab follows the layout. On a phone the
+   input and Add share the first row (as on the routine's page) and the toggle wraps under them. */
+.dk-add-input { flex: 1 1 160px; min-width: 0; font: inherit; padding: 9px 12px; min-height: 40px; border-radius: 10px; border: 1px dashed var(--dk-line); background: var(--dk-surface); color: var(--dk-ink); }
+.dk-add-input::placeholder, .dk-note-input::placeholder { color: var(--dk-muted); }
+.desk .dk-seg { border-radius: 10px; border-color: var(--dk-line); background: var(--dk-surface); }
+.desk .dk-seg .seg-btn { font-size: 13px; font-weight: 700; color: var(--dk-muted); padding: 0 10px; }
+.desk .dk-seg .seg-btn.active { background: var(--dk-accent-soft); color: var(--dk-accent); }
+.dk-btn { font: inherit; font-weight: 700; font-size: 13px; padding: 8px 14px; min-height: 40px; border-radius: 10px; border: 1px solid var(--dk-accent); background: var(--dk-accent); color: var(--dk-surface); cursor: pointer; }
+.dk-btn.ghost { background: none; color: var(--dk-accent); }
+.dk-btn:disabled { opacity: .55; cursor: default; }
+.dk-btn-sm { padding: 4px 12px; }
+.dk-x { min-width: 40px; padding: 4px 8px; font-size: 16px; line-height: 1; }
+
+/* Sections */
+.dk-sec-h { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.desk .dk-sec-h h2 { font-size: 22px; font-weight: 800; }
+.dk-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 820px) { .dk-two { grid-template-columns: minmax(0, 1fr); } }
+.dk-col { min-width: 0; }
+.dk-panel { background: var(--dk-surface); border: 1px solid var(--dk-line); border-radius: 14px; padding: 16px 18px; min-width: 0; }
+.dk-cleared { display: flex; flex-wrap: wrap; gap: 6px; }
+.dk-cleared span { font-size: 13px; padding: 3px 10px; border-radius: 99px; background: var(--dk-ok-soft); color: var(--dk-ok); overflow-wrap: anywhere; }
+.dk-cleared span::before { content: "✓ "; font-weight: 700; }
+.dk-proj { display: grid; gap: 14px; }
+.dk-proj article { display: grid; gap: 6px; padding-bottom: 14px; border-bottom: 1px dashed var(--dk-line); min-width: 0; }
+.dk-proj article:last-child { border-bottom: 0; padding-bottom: 0; }
+.desk .dk-proj h3 { font-size: 16px; font-weight: 700; font-family: var(--dk-body); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.dk-proj ul { margin: 0; padding-left: 18px; color: var(--dk-muted); font-size: 13.5px; display: grid; gap: 2px; }
+.dk-tl { list-style: none; margin: 0; padding: 0; display: grid; }
+.dk-tl li { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--dk-line); }
+.dk-tl li:last-child { border-bottom: 0; }
+.dk-when { font-family: var(--dk-mono); font-size: 12px; color: var(--dk-muted); padding-top: 2px; }
+.dk-what { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.dk-what b { font-size: 14px; }
+.dk-what span { font-size: 13px; color: var(--dk-muted); }
+.dk-tl li.hl .dk-when { color: var(--dk-accent); font-weight: 700; }
+
+/* Director agenda */
+.dk-agenda summary { cursor: pointer; list-style: none; display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; align-content: center; min-height: 40px; }
+.dk-agenda summary::-webkit-details-marker { display: none; }
+.desk .dk-agenda summary h2 { font-size: 22px; font-weight: 800; }
+.dk-agenda summary .dk-eyebrow::after { content: " · show"; }
+.dk-agenda[open] summary .dk-eyebrow::after { content: " · hide"; }
+.dk-ag { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 14px; }
+@media (max-width: 900px) { .dk-ag { grid-template-columns: minmax(0, 1fr); } }
+.desk .dk-ag h3, .desk .dk-llt-h h3 { font-family: var(--dk-mono); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dk-muted); }
+.dk-ag h3 { margin-bottom: 8px; }
+.dk-ag ol { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
+.dk-ag li { overflow-wrap: anywhere; }
+.dk-ag li b { display: block; font-size: 14px; }
+.dk-ag li span { font-size: 13px; color: var(--dk-muted); }
+.dk-ag-foot { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; font-size: 12.5px; color: var(--dk-muted); }
+
+/* LLT padlet */
+.dk-llt-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 22px; }
+@media (max-width: 820px) { .dk-llt-grid { grid-template-columns: minmax(0, 1fr); } }
+.dk-llt-h { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.desk .dk-llt-h h3 { margin-right: auto; }
+.dk-paste { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--dk-body); font-size: 14px; line-height: 1.5; background: var(--dk-bg); border: 1px solid var(--dk-line); border-radius: 10px; padding: 12px 14px; color: var(--dk-ink); }
+.dk-llt-note { margin: 0 0 10px; font-size: 13px; color: var(--dk-muted); }
+.dk-raise { margin: 0; padding-left: 20px; display: grid; gap: 10px; }
+.dk-raise li { overflow-wrap: anywhere; }
+.dk-raise b { display: block; font-size: 14px; }
+.dk-raise span { font-size: 13px; color: var(--dk-muted); }
+.dk-raise .none { list-style: none; margin-left: -20px; font-size: 14px; color: var(--dk-muted); }
+
+/* Quick links, footer, notices */
+.dk-quick { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+.dk-q { display: grid; gap: 2px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--dk-line); background: var(--dk-surface); text-decoration: none; color: var(--dk-ink); min-width: 0; overflow-wrap: anywhere; }
+.desk a.dk-q { color: var(--dk-ink); }
+.desk a.dk-q:hover { border-color: var(--dk-accent); }
+.dk-q b { font-size: 14px; }
+.dk-q span { font-size: 12px; color: var(--dk-muted); }
+.dk-q.off { color: var(--dk-muted); }
+.dk-foot { font-size: 12px; color: var(--dk-muted); display: grid; gap: 8px; }
+.dk-foot p { margin: 0; overflow-wrap: anywhere; }
+.dk-stale { background: var(--dk-warn-soft); color: var(--dk-ink); border-radius: 10px; padding: 10px 14px; font-size: 13.5px; }
+.dk-notice { display: grid; gap: 8px; }
+.desk .dk-notice h2 { font-size: 20px; font-weight: 800; }
+.dk-notice p { margin: 0; color: var(--dk-muted); overflow-wrap: anywhere; }
+.dk-notice-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 4px; }
+@media (prefers-reduced-motion: reduce) { .dk-bar i { transition: none; } }
 </style>

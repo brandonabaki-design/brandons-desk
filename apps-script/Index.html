@@ -6,7 +6,8 @@
   <title>Brandon's Desk</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+  <!-- Bricolage Grotesque (display) and JetBrains Mono (eyebrows, tags) are used only by the Desk page. -->
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
   <?!= include('Styles') ?>
 </head>
 <body>
@@ -14,7 +15,8 @@
     <div class="topbar-inner">
       <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Brandon's Desk</div>
       <nav class="tabs" id="tabs" aria-label="Pages">
-        <a href="#today" data-page="today">Today <span class="count" data-count="today" hidden></span></a>
+        <a href="#desk" data-page="desk">Desk</a>
+        <a href="#today" data-page="today">Tasks <span class="count" data-count="today" hidden></span></a>
         <a href="#inbox" data-page="inbox">Inbox <span class="count" data-count="inbox" hidden></span></a>
         <a href="#import" data-page="import">Import</a>
         <a href="#agenda" data-page="agenda">Agenda</a>
@@ -35,7 +37,13 @@
       <button type="button" class="btn primary" id="boot-retry">Try again</button>
     </div>
 
-    <!-- 1. Today -->
+    <!-- 0. Desk (home page: the morning build's board, read from the Desk tab; DESK.md section 3). Rendered by renderDesk(). -->
+    <section id="page-desk" class="page desk" hidden>
+      <div id="desk-root" class="dk-wrap"></div>
+      <div id="desk-live" class="sr-only" role="status" aria-live="polite"></div>
+    </section>
+
+    <!-- 1. Tasks (hash #today) -->
     <section id="page-today" class="page" hidden>
       <form class="quickadd" id="quickadd" autocomplete="off">
         <input type="text" id="qa-title" class="input" placeholder="Add a task and press Enter" maxlength="140" aria-label="New task title">

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /*
  * Render check for the web UI. Assembles Index.html, opens it in headless Chromium with the mock
- * google.script.run shim injected first, visits every page at 390x844 and 1280x900 (plus a dark-mode
- * and a "SheetJS missing" pass), clicks through the main flows, and saves screenshots.
+ * google.script.run shim injected first, visits every page at 390x844 and 1280x900 (plus dark-mode passes
+ * at both sizes and a "SheetJS missing" pass), clicks through the main flows (the Desk home page included:
+ * deskChecks below), and saves screenshots.
  * Fails (exit 1) on any console error, uncaught exception, unexpected network request, horizontal
  * page overflow, or a failed step.
  *
@@ -42,7 +43,9 @@ const XLSX_URL = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.m
 const XLSX_LOCAL = path.join(__dirname, '..', '..', 'node_modules', 'xlsx', 'dist', 'xlsx.full.min.js');
 const XLSX_SHA384 = 'vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw';
 const MOCK = fs.readFileSync(path.join(__dirname, 'mock-server.js'), 'utf8');
-const PAGES = ['today', 'inbox', 'import', 'agenda', 'newsletter', 'history'];
+const PAGES = ['desk', 'today', 'inbox', 'import', 'agenda', 'newsletter', 'history'];
+const DESK_URL = 'https://claude.ai/artifact/3mG2UW54W6WkRFMAqkqxzr';
+const AISA_MAIL = 'https://mail.google.com/mail/?authuser=bbaki%40aisa.sch.ae#';
 
 const failures = [];
 const shots = [];
@@ -144,7 +147,9 @@ async function runViewport(browser, url, vp, opts) {
     check(await page.isHidden('#loading'), tag + ': loading hidden after bootstrap');
     check((await page.textContent('[data-count="today"]')).trim() === '17', tag + ': Today tab count shows 17 open tasks');
     const tabs = await page.evaluate(() => { const s = document.getElementById('tabs'); return { sw: s.scrollWidth, cw: s.clientWidth }; });
-    check(tabs.sw <= tabs.cw, tag + ': all six tabs fit without scrolling (' + tabs.sw + ' <= ' + tabs.cw + ')');
+    check(tabs.sw <= tabs.cw, tag + ': all seven tabs fit without scrolling (' + tabs.sw + ' <= ' + tabs.cw + ')');
+    const tabNames = await page.evaluate(() => Array.from(document.querySelectorAll('#tabs a')).map((a) => a.getAttribute('data-page') + ':' + a.textContent.replace(/\d+/g, '').trim()));
+    check(tabNames[0] === 'desk:Desk' && tabNames[1] === 'today:Tasks', tag + ': Desk is the first tab and Today is now called Tasks (hash #today) ' + JSON.stringify(tabNames));
     check((await page.textContent('[data-count="inbox"]')).trim() === '6', tag + ': Inbox tab count shows 6 new items');
 
     for (const name of PAGES) {
@@ -445,6 +450,9 @@ async function runViewport(browser, url, vp, opts) {
     await gotoPage(page, 'today');
     check(await page.locator('#col-personal .task', { hasText: 'Return library books' }).count() === 1, tag + ': reopened task appears on Today');
 
+    // ---- Desk (home page) ----
+    await deskChecks(page, url, vp, opts);
+
     // ---- hash navigation on a fresh load + boot failure/retry ----
     await page.goto(url + '#newsletter');
     await page.waitForSelector('body[data-ready="1"]');
@@ -468,7 +476,362 @@ async function runViewport(browser, url, vp, opts) {
   }
 }
 
-async function downloadCheck(page, selector, baseName, xlsx, tag, sheetName, cellCheck) {
+/* ---------------------------------------------------------------------------------------------------------------------
+ * The Desk (docs/DESK.md section 3) against the fictional board in mock-server.js. Runs after the other pages' flows, so
+ * the tasks they added, ticked and moved are part of what the Desk shows (as getDesk would show them after a reload).
+ * ------------------------------------------------------------------------------------------------------------------- */
+const DESK_AGENDA_TEXT = ['Tue 13 Oct · Director', '', 'DONE', '1. Hub mentors on board (Eight mentors in the Chat space)', '2. Assessment calendar submitted (Sent to Omar on Friday)',
+  '3. Workshop photos shared', '', 'IN PROGRESS', '1. Hub launch note (+18 sign-ups since the soft launch)', '2. Grade 10 Design unit plan (Rubric with Lina by Monday)',
+  '3. Single sign-on for the Hub portal (Waiting on IT for a date)', '', 'DECISIONS & QUESTIONS', '1. Budget for twelve replacement micro:bits? (Finance needs the code by Thursday)',
+  '2. =Shared drive clean-up: still mine?', '3. Anything from your side for my list next week?'].join('\n');
+const DESK_LLT_TEXT = 'Working On:\n* Hub launch and mentor rota\n* Grade 10 Design unit with the team\n* PD session on AI tools\n\nGoing Great:\n* Eight mentors signed up in a week\n\nKeeping me up at night:\n* Single sign-on date still open';
+/** What the board shows: meter text, card counts, and per lane its title, "N open" label and the open cards really in it. */
+function deskView(page) {
+  return page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('#desk-board .dk-item:not(.pending)'));
+    const lanes = Array.from(document.querySelectorAll('#desk-board .dk-lane')).map((l) => ({ key: l.getAttribute('data-lane'), title: l.querySelector('h2').textContent,
+      count: l.querySelector('.dk-count').textContent, open: l.querySelectorAll('.dk-item:not(.done):not(.pending)').length }));
+    const meter = document.getElementById('desk-done');
+    return { meter: meter ? meter.textContent : '', bar: (document.getElementById('desk-bar') || { style: {} }).style.width, total: cards.length,
+      done: cards.filter((c) => c.classList.contains('done')).length, lanes: lanes, live: document.getElementById('desk-live').textContent };
+  });
+}
+function deskConsistent(v) { return v.meter === v.done + ' / ' + v.total && v.lanes.every((l) => l.count === l.open + ' open'); }
+/** Waits until no tick, note or add is on its way (the meter's sync line stops saying "Saving"). */
+async function deskIdle(page) {
+  await page.waitForFunction(() => { const s = document.getElementById('desk-sync'); return !s || !/Saving/.test(s.textContent); }, null, { timeout: 5000 });
+  await page.waitForTimeout(60); // a queued note (updateTask) follows its tick
+}
+function lastCall(page, name) { return page.evaluate((n) => window.__mock.calls.filter((c) => c.name === n).slice(-1)[0] || null, name); }
+function mockTask(page, pred) { return page.evaluate((src) => window.__mock.state.tasks.filter(new Function('t', 'return ' + src))[0] || null, pred); }
+function focusedCard(page) {
+  return page.evaluate(() => { const a = document.activeElement; const c = a && a.closest ? a.closest('[data-key]') : null; return c ? c.getAttribute('data-key') + '/' + (a.getAttribute('data-role') || a.tagName) : (a ? a.id || a.tagName : ''); });
+}
+async function deskReload(page, url, query) {
+  await page.goto(url + query + '#desk');
+  await page.waitForSelector('body[data-ready="1"]');
+  await page.waitForSelector('#desk-board, #desk-empty');
+  await page.evaluate(() => { window.__mock.latency = 30; });
+}
+
+async function deskChecks(page, url, vp, opts) {
+  const tag = vp.name;
+  await gotoPage(page, 'desk');
+  check(/active/.test(await page.getAttribute('#tabs a[data-page="desk"]', 'class')), tag + ': Desk tab active');
+  let v = await deskView(page);
+  check(JSON.stringify(v.lanes.map((l) => [l.key, l.title])) === JSON.stringify([['now', 'Do today'], ['reply', 'Reply & follow up'], ['later', 'This week']]), tag + ': three lanes titled from meta.lanes');
+  check(await page.locator('#desk-board .dk-item[data-key^="i:"]').count() === 16, tag + ': all 16 board items render');
+  check(deskConsistent(v) && v.live === v.done + ' of ' + v.total + ' done', tag + ': meter and lane counts agree with the cards ' + JSON.stringify(v));
+  check((await page.textContent('#desk-eyebrow')) === 'Saturday 10 October 2026 · weekend', tag + ': eyebrow from the Desk data');
+  // "Added by you": Open Manual tasks not on the board, in the first lane (fixtures + the Tasks page quick-add above)
+  const added = await page.$$eval('#desk-board .dk-item[data-key^="a:"]', (els) => els.map((e) => [e.closest('.dk-lane').getAttribute('data-lane'), e.querySelector('.dk-title').textContent, !!e.querySelector('.dk-tag-list')]));
+  const addedTitles = added.map((a) => a[1]);
+  check(addedTitles.indexOf('Check projector in room 204') >= 0 && addedTitles.indexOf('Buy a birthday present for Maya') >= 0 && addedTitles.indexOf('Email parents about the trip') >= 0 &&
+    added.every((a) => a[0] === 'now' && a[2]), tag + ': added tasks (Source Manual, not on the board) head the first lane with an "Added by you" chip ' + JSON.stringify(added));
+  check(addedTitles.indexOf('Call the dentist to reschedule') < 0, tag + ': a Manual task that is a board item\'s task is not listed again under added');
+  check(await page.locator('[data-key="a:W-fx16abcd"] a').count() === 0, tag + ': an added task\'s javascript: link is not rendered');
+  // ticked from the tracker: "swim" matches its row by Source key desk:swim, which is Done
+  check(await page.locator('[data-key="i:swim"].done input[type="checkbox"]:checked').count() === 1, tag + ': an item whose row is Done renders ticked');
+  // tags keep the routine's colour meanings
+  const tagKinds = await page.$$eval('#desk-board .dk-tag', (els) => Array.from(new Set(els.map((e) => e.className))).sort());
+  check(['dk-tag', 'dk-tag dk-tag-due', 'dk-tag dk-tag-gh', 'dk-tag dk-tag-home', 'dk-tag dk-tag-late', 'dk-tag dk-tag-list', 'dk-tag dk-tag-new'].every((k) => tagKinds.indexOf(k) >= 0), tag + ': every tag kind has its chip style ' + JSON.stringify(tagKinds));
+  // links: wt:, w:, p: expanded; https kept; javascript: shown as text
+  const hrefs = await page.evaluate(() => {
+    const a = (sel) => Array.from(document.querySelectorAll(sel)).map((x) => [x.tagName, x.textContent, x.getAttribute('href'), x.getAttribute('target'), x.getAttribute('rel')]);
+    return { launch: a('[data-key="i:launch"] .dk-lnk'), rota: a('[data-key="i:rota"] .dk-lnk'), bill: a('[data-key="i:bill"] .dk-lnk'), survey: a('[data-key="i:survey"] .dk-lnk'),
+      js: document.querySelectorAll('#page-desk a[href^="javascript"], #page-desk a:not([href])').length };
+  });
+  check(JSON.stringify(hrefs.launch) === JSON.stringify([['A', 'Thread', AISA_MAIL + 'all/18f3a1b2c3d4e5f6', '_blank', 'noopener'], ['A', 'Numbers', 'https://docs.google.com/spreadsheets/d/1HubNumbersDemo/edit', '_blank', 'noopener']]), tag + ': wt: thread and https links ' + JSON.stringify(hrefs.launch));
+  check(hrefs.rota.length === 1 && hrefs.rota[0][2] === AISA_MAIL + 'search/subject%3A(mentor+rota)+newer_than%3A7d', tag + ': w: search link encoded with + for spaces ' + JSON.stringify(hrefs.rota));
+  check(hrefs.bill[1] && hrefs.bill[1][2] === 'https://mail.google.com/mail/?authuser=brandon.abaki@gmail.com#all/thread-f:1812345678901234567', tag + ': p: personal thread link');
+  check(JSON.stringify(hrefs.survey.map((x) => [x[0], x[1], x[2]])) === JSON.stringify([['SPAN', 'Survey', null], ['A', 'Search mail', AISA_MAIL + 'search/subject%3A(parent+survey)+newer_than%3A7d']]) && hrefs.js === 0,
+    tag + ': a javascript: target is plain text, never a link ' + JSON.stringify(hrefs.survey));
+  // strip, cleared, priorities, coming up, quick links, footer
+  const parts = await page.evaluate(() => ({
+    days: Array.from(document.querySelectorAll('#desk-strip .dk-day')).map((d) => d.tagName + '.' + d.className.replace('dk-day', '').trim()),
+    cleared: document.querySelectorAll('#desk-cleared span').length, prio: document.querySelectorAll('#desk-priorities article').length,
+    prioTags: Array.from(document.querySelectorAll('#desk-priorities h3 .dk-tag')).map((t) => t.className),
+    coming: Array.from(document.querySelectorAll('#desk-coming li')).map((li) => (li.classList.contains('hl') ? '*' : '') + (li.querySelector('a') ? 'A' : '-')).join(''),
+    quick: Array.from(document.querySelectorAll('#desk-quick > *')).map((q) => q.tagName).join(','), foot: document.getElementById('desk-foot').textContent,
+    open: (document.getElementById('desk-open') || {}).href, stale: !!document.getElementById('desk-stale')
+  }));
+  check(JSON.stringify(parts.days) === JSON.stringify(['A.now', 'A.', 'A.', 'A.pd', 'DIV.brk', 'A.', 'DIV.']), tag + ': strip days link out, keep now/brk/pd, drop unknown classes and bad links ' + JSON.stringify(parts.days));
+  check(parts.cleared === 3 && parts.prio === 3 && parts.prioTags.join() === 'dk-tag dk-tag-due,dk-tag dk-tag-late', tag + ': cleared chips and top priorities');
+  check(parts.coming === '*AA--A-', tag + ': coming up: highlighted first row, links only for http(s) targets (' + parts.coming + ')');
+  check(parts.quick === 'A,A,A,A,A,DIV', tag + ': quick links (an ftp: one is plain text)');
+  check(parts.foot === 'Built Sat 10 Oct, 9:12am Gulf time from the AISA calendar, personal Gmail, the 06:15 Inbox capture and your tracker sheet. Open the Desk page' && parts.open === DESK_URL && !parts.stale,
+    tag + ': footer "Built … from …." with the Desk page link, no stale note ' + JSON.stringify(parts.foot));
+  // tap targets: checkbox labels 40 x 40, buttons and the Work/Personal toggle 40 px tall, link pills 40 px of hit area
+  const smallChecks = await tooSmall(page, '#page-desk .dk-check', 40, true);
+  const smallBtns = await tooSmall(page, '#page-desk .dk-btn, #page-desk .seg-btn, #desk-add-title', 40);
+  const pillHit = await page.evaluate(() => { const a = document.querySelector('#desk-board a.dk-lnk'); a.scrollIntoView({ block: 'center' }); const r = a.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top - 4); return { h: Math.round(r.height), hit: hit === a }; });
+  check(smallChecks.length === 0 && smallBtns.length === 0 && pillHit.hit, tag + ': Desk tap targets are at least 40 px (checkboxes, buttons, toggle; link pills via their hit area) ' + JSON.stringify([smallChecks, smallBtns, pillHit]));
+  // the plain links (Coming up titles, the footer's Desk page link) get the same 40 px hit area; the agenda toggle is 40 px tall
+  const linkHits = await page.evaluate(() => ['#desk-coming a', '#desk-open'].map((sel) => {
+    const a = document.querySelector(sel); a.scrollIntoView({ block: 'center' });
+    const r = a.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    return { sel: sel, h: Math.round(r.height), hit: document.elementFromPoint(x, y - 18) === a && document.elementFromPoint(x, y + 18) === a };
+  }));
+  const shortSummary = await tooSmall(page, '#desk-agenda-summary', 40);
+  check(linkHits.every((l) => l.hit) && shortSummary.length === 0, tag + ': Coming up and Open the Desk page links have a 40 px hit area, the agenda toggle is 40 px tall ' + JSON.stringify([linkHits, shortSummary]));
+  // the add box: Tab goes input → Add → Work → Personal, the order they are laid out in at this width
+  await page.focus('#desk-add-title');
+  const tabSeq = [];
+  for (let i = 0; i < 4; i++) {
+    if (i) await page.keyboard.press('Tab');
+    tabSeq.push(await page.evaluate(() => { const a = document.activeElement, r = a.getBoundingClientRect(); return { id: a.id || a.getAttribute('data-value'), x: Math.round(r.left), y: Math.round(r.top) }; }));
+  }
+  const tabInOrder = tabSeq.every((p, i) => i === 0 || p.y > tabSeq[i - 1].y + 4 || (Math.abs(p.y - tabSeq[i - 1].y) <= 4 && p.x > tabSeq[i - 1].x));
+  check(tabSeq.map((p) => p.id).join(',') === 'desk-add-title,desk-add-go,Work,Personal' && tabInOrder, tag + ': add box focus order matches its layout ' + JSON.stringify(tabSeq));
+  await page.evaluate(() => document.activeElement.blur());
+  await noOverflow(page, tag + ' desk');
+
+  // ---- tick an item with no tracker row yet: optimistic, then setDeskItemDone creates the row Done; note after the tick ----
+  await page.evaluate(() => { window.__mock.latency = 400; });
+  const before = await deskView(page);
+  await page.click('[data-key="i:pdslides"] input[type="checkbox"]');
+  const mid = await page.evaluate(() => ({ done: document.querySelector('[data-key="i:pdslides"]').classList.contains('done'), sync: document.getElementById('desk-sync').textContent, meter: document.getElementById('desk-done').textContent }));
+  check(mid.done && /Saving/.test(mid.sync) && mid.meter === (before.done + 1) + ' / ' + before.total, tag + ': tick is optimistic (card struck through, meter ' + mid.meter + ', "Saving…")');
+  check(await page.locator('[data-key="i:pdslides"] .dk-note input').count() === 1, tag + ': the optional note field opens under the ticked card');
+  await deskIdle(page);
+  await page.evaluate(() => { window.__mock.latency = 30; });
+  check(JSON.stringify((await lastCall(page, 'setDeskItemDone')).payload) === JSON.stringify({ itemId: 'pdslides', done: true }), tag + ': setDeskItemDone({itemId, done:true}) sent');
+  const created = await mockTask(page, "t.sourceKey === 'desk:pdslides'");
+  check(created && created.status === 'Done' && created.category === 'Work' && created.source === 'Chat' && created.link === 'https://docs.google.com/presentation/d/1PdSlidesDemo/edit' &&
+    created.due === '2026-10-10' && created.priority === 'High', tag + ': the tick created the tracker row (Source, Link, Due, Priority from the item) ' + JSON.stringify(created));
+  check(await waitToast(page, 'Done: Add the AI tools demo to the PD slides'), tag + ': tick toast');
+  await page.fill('[data-key="i:pdslides"] .dk-note input', 'Added the demo slide');
+  await shot(page, tag + '-desk-note');
+  await page.press('[data-key="i:pdslides"] .dk-note input', 'Enter');
+  check(await waitToast(page, 'Note saved: Add the AI tools demo'), tag + ': note saved toast');
+  const noteCall = await lastCall(page, 'updateTask');
+  check(JSON.stringify(noteCall.payload) === JSON.stringify({ category: 'Work', id: created.id, patch: { note: 'Added the demo slide' } }), tag + ': Enter saves the note with updateTask patch note ' + JSON.stringify(noteCall.payload));
+  check((await mockTask(page, "t.sourceKey === 'desk:pdslides'")).note === 'Added the demo slide', tag + ': note reached the row');
+  check(await page.locator('[data-key="i:pdslides"] .dk-note').count() === 0 && (await focusedCard(page)) === 'i:pdslides/check', tag + ': the note field closes and focus goes back to the card\'s checkbox');
+  v = await deskView(page);
+  check(deskConsistent(v) && v.done === before.done + 1, tag + ': meter after the tick ' + v.meter);
+  await clearToasts(page);
+  await gotoPage(page, 'today');
+  check(await page.locator('#col-work details.done-group .task', { hasText: 'Add the AI tools demo to the PD slides' }).count() === 1, tag + ': the row ticked on the Desk shows under Done today on the Tasks page');
+  await gotoPage(page, 'desk');
+  check(await page.locator('[data-key="i:pdslides"].done').count() === 1, tag + ': still ticked after visiting the Tasks page');
+  // untick reopens
+  await page.click('[data-key="i:pdslides"] input[type="checkbox"]');
+  await deskIdle(page);
+  check(JSON.stringify((await lastCall(page, 'setDeskItemDone')).payload) === JSON.stringify({ itemId: 'pdslides', done: false }) &&
+    (await mockTask(page, "t.sourceKey === 'desk:pdslides'")).status === 'Open' && await page.locator('[data-key="i:pdslides"].done').count() === 0, tag + ': untick sends done:false and reopens the row');
+  await clearToasts(page);
+
+  // ---- tick an item linked to a tracker row; Escape closes the note field ----
+  await page.click('[data-key="i:fatima"] input[type="checkbox"]');
+  await deskIdle(page);
+  check((await mockTask(page, "t.id === 'W-fx5abcde'")).status === 'Done', tag + ': ticking a linked item completes its row (W-fx5abcde)');
+  await page.press('[data-key="i:fatima"] .dk-note input', 'Escape');
+  check(await page.locator('[data-key="i:fatima"] .dk-note').count() === 0 && (await focusedCard(page)) === 'i:fatima/check', tag + ': Escape dismisses the note field and keeps focus on the checkbox');
+  await page.keyboard.press('Space'); // the focused checkbox: Space unticks
+  await deskIdle(page);
+  check((await mockTask(page, "t.id === 'W-fx5abcde'")).status === 'Open', tag + ': Space on the checkbox unticks (reopenTask on the row)');
+  await clearToasts(page);
+
+  // ---- a failed tick rolls back and shows the server's error ----
+  await page.evaluate(() => window.__mock.failNext('setDeskItemDone', 'Sheet is locked, try again'));
+  const beforeFail = await deskView(page);
+  await page.click('[data-key="i:kits"] input[type="checkbox"]');
+  check(await waitToast(page, 'Sheet is locked, try again'), tag + ': failed tick shows the error toast');
+  await deskIdle(page);
+  v = await deskView(page);
+  check(await page.locator('[data-key="i:kits"].done').count() === 0 && v.meter === beforeFail.meter && await page.locator('[data-key="i:kits"] .dk-note').count() === 0, tag + ': failed tick reverted (card, meter, note field)');
+  check(!/Done: Tell Omar/.test(await toastText(page)), tag + ': the optimistic Done toast is withdrawn');
+  check(await mockTask(page, "t.sourceKey === 'desk:kits'") === null, tag + ': no row was created by the failed tick');
+  await clearToasts(page);
+
+  // ---- an "Added by you" task ticks through completeTask / reopenTask; its note through updateTask ----
+  await page.click('[data-key="a:W-fx16abcd"] input[type="checkbox"]');
+  await deskIdle(page);
+  check(JSON.stringify((await lastCall(page, 'completeTask')).payload) === JSON.stringify({ category: 'Work', id: 'W-fx16abcd' }) && (await mockTask(page, "t.id === 'W-fx16abcd'")).status === 'Done',
+    tag + ': an added task ticks through completeTask');
+  await page.fill('[data-key="a:W-fx16abcd"] .dk-note input', 'Bulb replaced');
+  await page.click('[data-key="a:W-fx16abcd"] .dk-note button[data-role="note-save"]');
+  check(await waitToast(page, 'Note saved: Check projector'), tag + ': Save note button saves the note');
+  check((await mockTask(page, "t.id === 'W-fx16abcd'")).note === 'Bulb replaced', tag + ': the added task\'s note reached the row');
+  await page.click('[data-key="a:W-fx16abcd"] input[type="checkbox"]');
+  await deskIdle(page);
+  check(JSON.stringify((await lastCall(page, 'reopenTask')).payload) === JSON.stringify({ category: 'Work', id: 'W-fx16abcd' }) && (await mockTask(page, "t.id === 'W-fx16abcd'")).status === 'Open',
+    tag + ': unticking an added task reopens it');
+  await clearToasts(page);
+
+  // ---- the add box: Work by default, Personal toggle, duplicate, failure ----
+  check((await page.getAttribute('#desk-add-category [data-value="Work"]', 'aria-checked')) === 'true', tag + ': the add box defaults to Work');
+  await page.fill('#desk-add-title', 'Print the rubric for Monday');
+  await page.press('#desk-add-title', 'Enter');
+  check(await waitToast(page, 'Added to Work: Print the rubric for Monday'), tag + ': Desk add toast');
+  check(JSON.stringify((await lastCall(page, 'addTask')).payload) === JSON.stringify({ category: 'Work', title: 'Print the rubric for Monday' }), tag + ': the add box calls addTask({category, title})');
+  const firstCard = await page.evaluate(() => { const c = document.querySelector('#desk-board .dk-lane.dk-l1 .dk-item'); return [c.querySelector('.dk-title').textContent, c.textContent.indexOf('Added by you') >= 0]; });
+  check(firstCard[0] === 'Print the rubric for Monday' && firstCard[1], tag + ': the new task heads the first lane with "Added by you"');
+  check((await page.inputValue('#desk-add-title')) === '' && (await page.evaluate(() => document.activeElement && document.activeElement.id)) === 'desk-add-title', tag + ': add box cleared and still focused');
+  await page.click('#desk-add-category [data-value="Personal"]');
+  await page.fill('#desk-add-title', 'Book the car service');
+  await page.press('#desk-add-title', 'Enter');
+  check(await waitToast(page, 'Added to Personal: Book the car service'), tag + ': Personal toggle adds to Personal');
+  check(await page.locator('#desk-board .dk-item', { hasText: 'Book the car service' }).locator('.dk-tag-home').count() === 1, tag + ': a Personal added task carries the Personal chip');
+  await page.click('#desk-add-category [data-value="Work"]');
+  await page.fill('#desk-add-title', 'print the rubric for monday');
+  await page.press('#desk-add-title', 'Enter');
+  check(await waitToast(page, 'Already on your list'), tag + ': duplicate reported');
+  check(await page.locator('#desk-board .dk-item', { hasText: 'Print the rubric for Monday' }).count() === 1, tag + ': duplicate not shown twice');
+  await page.evaluate(() => window.__mock.failNext('addTask', 'Sheet is locked, try again'));
+  await page.fill('#desk-add-title', 'This one fails');
+  await page.press('#desk-add-title', 'Enter');
+  check(await waitToast(page, 'Sheet is locked, try again'), tag + ': failed add shows the error');
+  await deskIdle(page);
+  check(await page.locator('#desk-board .dk-item', { hasText: 'This one fails' }).count() === 0 && (await page.inputValue('#desk-add-title')) === 'This one fails', tag + ': failed add rolled back, title restored');
+  await page.fill('#desk-add-title', '');
+  v = await deskView(page);
+  check(deskConsistent(v), tag + ': meter and lane counts still agree after adds ' + JSON.stringify([v.meter, v.lanes.map((l) => l.count)]));
+  await clearToasts(page);
+  await gotoPage(page, 'today');
+  check(await page.locator('#col-work .task', { hasText: 'Print the rubric for Monday' }).count() === 1 && await page.locator('#col-personal .task', { hasText: 'Book the car service' }).count() === 1,
+    tag + ': tasks added on the Desk are on the Tasks page');
+  await gotoPage(page, 'desk');
+
+  // ---- director agenda: open per the data, remembers a toggle, copy as text, download .xlsx (or the CSV fallback) ----
+  check(await page.locator('#desk-agenda[open] .dk-ag > div').count() === 3, tag + ': agenda open (agenda.open) with three sections');
+  await page.click('#desk-agenda-summary');
+  await page.click('[data-key="i:rubric"] input[type="checkbox"]'); // any re-render
+  await deskIdle(page);
+  check(await page.locator('#desk-agenda[open]').count() === 0, tag + ': a closed agenda stays closed across re-renders');
+  await page.click('[data-key="i:rubric"] input[type="checkbox"]');
+  await deskIdle(page);
+  await page.click('#desk-agenda-summary');
+  await clearToasts(page);
+  await page.click('#desk-agenda-copy');
+  check(await waitToast(page, 'Agenda copied as text'), tag + ': agenda copy toast');
+  const agendaCopied = await page.evaluate(() => window.__copied || '');
+  check(agendaCopied === DESK_AGENDA_TEXT, tag + ': agenda copied in the routine page\'s text format\n' + agendaCopied);
+  await clearToasts(page);
+  await downloadCheck(page, '#desk-agenda-download', 'desk-agenda-2026-10-10', opts.xlsx, tag + '-desk', 'Agenda', (ws) =>
+    ws.A1 && ws.A1.v === 'Tue 13 Oct · Director' && ws.A2 && ws.A2.v === 'Director: Dr Sarah Mitchell' && ws.A4 && ws.A4.v === 'Section' && ws.B4.v === 'Item' && ws.C4.v === 'Detail' && !ws.D4 &&
+    ws.A5.v === 'Done' && ws.B5.v === 'Hub mentors on board' && Object.keys(ws).some((k) => /^B\d+$/.test(k) && ws[k].v === ' =Shared drive clean-up: still mine?'), 3);
+  // ---- LLT padlet block ----
+  check((await page.textContent('#desk-llt-text')) === DESK_LLT_TEXT && (await page.getAttribute('#desk-padlet', 'href')) === 'https://padlet.com/example-school/fill-us-in-demo' &&
+    await page.locator('#desk-llt-raise li').count() === 1, tag + ': LLT block (paste text, padlet link, raise list)');
+  await page.click('#desk-llt-copy');
+  check(await waitToast(page, 'Copied. Paste it as a comment on your card.') && (await page.evaluate(() => window.__copied)) === DESK_LLT_TEXT, tag + ': LLT copy');
+  await clearToasts(page);
+  await noOverflow(page, tag + ' desk after ticks and adds');
+  await shot(page, tag + '-desk-after');
+  if (vp.width < 400) { // the narrowest phone the app supports
+    await page.setViewportSize({ width: 360, height: 740 });
+    await page.waitForTimeout(80);
+    await noOverflow(page, tag + ' desk at 360 px');
+    const tabs = await page.evaluate(() => { const s = document.getElementById('tabs'); return { sw: s.scrollWidth, cw: s.clientWidth }; });
+    check(tabs.sw <= tabs.cw && (await tooSmall(page, '#tabs a', 40)).length === 0, tag + ': at 360 px all seven tabs fit and stay 40 px tall');
+    await shot(page, 'narrow360-desk');
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+  }
+
+  // ---- getDesk failing: the error with Try again, which recovers ----
+  await page.goto(url + '?deskfail=1#today');
+  await page.waitForSelector('body[data-ready="1"]');
+  await page.evaluate(() => { window.__mock.latency = 30; window.__mock.failNext('getDesk', 'Desk tab is missing'); });
+  await gotoPage(page, 'desk');
+  check(/Couldn't load the Desk/.test(await page.textContent('#desk-empty')) && /Desk tab is missing/.test(await page.textContent('#desk-empty')), tag + ': a failed getDesk shows the error');
+  await page.click('#desk-retry');
+  await page.waitForSelector('#desk-board .dk-item[data-key="i:launch"]');
+  ok(tag + ': Try again loads the Desk');
+
+  // ---- empty Desk tab: the calm panel, the Desk page link, and the add box still works ----
+  await deskReload(page, url, '?desk=empty');
+  const emptyText = await page.textContent('#desk-empty');
+  check(emptyText.indexOf('Your Desk appears here after the next morning build (6:45 on school days), or press Rebuild now on the Desk page.') >= 0 &&
+    (await page.getAttribute('#desk-empty #desk-open', 'href')) === DESK_URL, tag + ': empty state message and Desk page link');
+  check(await page.locator('#desk-board .dk-lane').count() === 1 && await page.locator('[data-key="a:W-fx16abcd"]').count() === 1, tag + ': empty state keeps one lane with the added tasks');
+  await page.fill('#desk-add-title', 'Water the classroom plants');
+  await page.press('#desk-add-title', 'Enter');
+  check(await waitToast(page, 'Added to Work: Water the classroom plants') && await page.locator('#desk-board .dk-item', { hasText: 'Water the classroom plants' }).count() === 1, tag + ': the add box works on an empty Desk');
+  await clearToasts(page);
+  await noOverflow(page, tag + ' desk empty');
+  await shot(page, tag + '-desk-empty');
+  // ---- unreadable data: the server's message and the same link ----
+  await deskReload(page, url, '?desk=invalid');
+  check(/The Desk tab could not be read: items2 is not valid JSON\./.test(await page.textContent('#desk-empty')) && (await page.getAttribute('#desk-empty #desk-open', 'href')) === DESK_URL,
+    tag + ': invalid data shows the message and the Desk page link');
+  // ---- stale: built on an earlier day ----
+  await deskReload(page, url, '?desk=stale');
+  const staleText = await page.textContent('#desk-stale');
+  check(staleText === 'This Desk is from Friday 9 Oct; the next build is at 6:45 on school days. Open the Desk page' && (await page.getAttribute('#desk-stale a', 'href')) === DESK_URL &&
+    await page.isVisible('#desk-stale'), tag + ': stale note with the Desk page link ' + JSON.stringify(staleText));
+  await shot(page, tag + '-desk-stale');
+  // ---- most fields missing or of the wrong type ----
+  await deskReload(page, url, '?desk=minimal');
+  const minimal = await page.evaluate(() => ({ lanes: Array.from(document.querySelectorAll('#desk-board .dk-lane h2')).map((h) => h.textContent),
+    first: Array.from(document.querySelectorAll('#desk-board .dk-l1 .dk-item[data-key^="i:"] .dk-title')).map((t) => t.textContent),
+    noId: !!document.querySelector('[data-key="i:"] input[type="checkbox"]:disabled'), gone: ['desk-strip', 'desk-agenda', 'desk-llt', 'desk-quick'].filter((id) => document.getElementById(id)).length }));
+  check(minimal.lanes.join('|') === 'Do today|Reply & follow up|This week' && minimal.first.join('|') === 'An item whose lane is not listed|No lane and no why|No id, so it cannot be ticked' && minimal.noId && minimal.gone === 0,
+    tag + ': a Desk with missing fields renders with default lanes, unknown lanes in the first, an id-less item not tickable ' + JSON.stringify(minimal));
+  // ---- no hash: the Desk is the home page ----
+  await page.goto(url + '?home=1');
+  await page.waitForSelector('body[data-ready="1"]');
+  await page.waitForSelector('#desk-board .dk-item');
+  check(await page.isVisible('#page-desk') && await page.isHidden('#page-today') && /active/.test(await page.getAttribute('#tabs a[data-page="desk"]', 'class')), tag + ': with no hash the Desk is the page shown');
+
+  // ---- an item's row dropped or moved on the Tasks page: the card reads as getDesk would (Dropped is done; a move follows the copy) ----
+  await page.goto(url + '?follow=1#desk');
+  await page.waitForSelector('body[data-ready="1"]');
+  await page.waitForSelector('#desk-board .dk-item[data-key="i:fatima"]');
+  const cardDone = (key) => page.locator('#desk-board .dk-item.done[data-key="' + key + '"]').count();
+  const addedDentist = () => page.locator('#desk-board .dk-item[data-key^="a:"]', { hasText: 'Call the dentist to reschedule' }).count();
+  check(await cardDone('i:fatima') === 0 && await cardDone('i:dentist') === 0, tag + ': before: the fatima and dentist cards are open');
+  await gotoPage(page, 'today');
+  const fat = page.locator('.task', { hasText: 'Reply to Fatima Al Ali about the AI club trial' });
+  await fat.locator('.task-title').click();
+  await fat.locator('.editor button', { hasText: 'Drop' }).click();
+  check(await waitToast(page, 'Dropped: Reply to Fatima Al Ali'), tag + ': the fatima card\'s row dropped on the Tasks page');
+  await clearToasts(page);
+  const den = page.locator('.task', { hasText: 'Call the dentist to reschedule' });
+  await den.locator('.task-title').click();
+  await den.locator('.editor button', { hasText: 'Move to Work' }).click();
+  check(await waitToast(page, 'Moved to Work: Call the dentist to reschedule'), tag + ': the dentist card\'s row moved to Work');
+  await clearToasts(page);
+  await gotoPage(page, 'desk');
+  let fv = await deskView(page);
+  check(await cardDone('i:fatima') === 1 && await cardDone('i:dentist') === 0 && await addedDentist() === 0 && deskConsistent(fv),
+    tag + ': a dropped row ticks its card; a moved row\'s copy stays the card\'s row (not listed under Added by you) ' + JSON.stringify([fv.meter, fv.lanes.map((l) => l.count)]));
+  await gotoPage(page, 'today');
+  await page.locator('#col-work .task', { hasText: 'Call the dentist to reschedule' }).locator('.task-check').click();
+  await page.locator('.note-box button', { hasText: 'Done, no note' }).click();
+  check(await waitToast(page, 'Done: Call the dentist'), tag + ': the moved copy ticked on the Tasks page');
+  await clearToasts(page);
+  await gotoPage(page, 'desk');
+  fv = await deskView(page);
+  check(await cardDone('i:dentist') === 1 && deskConsistent(fv), tag + ': ticking the moved copy ticks the card that follows it');
+
+  // ---- "Added by you" keeps getDesk's cap of 20 open tasks when one more is added on the Desk ----
+  await page.goto(url + '?cap=1#today');
+  await page.waitForSelector('body[data-ready="1"]');
+  await page.evaluate(() => {
+    const s = window.__mock.state;
+    ['alder', 'basil', 'cedar', 'dahlia', 'elm', 'fern', 'ginkgo', 'hazel', 'iris', 'juniper', 'kale', 'lilac', 'maple', 'nettle', 'oak', 'peony', 'quince', 'rowan', 'sage', 'tansy'].forEach((w, i) => {
+      s.tasks.push({ id: 'W-cap' + String(i).padStart(5, '0'), category: 'Work', created: s.today, title: 'Water the ' + w + ' pot', details: '', source: 'Manual', link: '', status: 'Open', done: '',
+        note: '', project: '', newsletter: false, discuss: false, due: '', priority: 'Normal', sourceKey: '', updated: s.today + 'T07:' + String(10 + i) + ':00+04:00', row: 0 });
+    });
+  });
+  await gotoPage(page, 'desk');
+  const openAdded = () => page.locator('#desk-board .dk-item[data-key^="a:"]:not(.done):not(.pending)').count();
+  const capBefore = await openAdded();
+  await page.fill('#desk-add-title', 'Laminate the seating plan');
+  await page.press('#desk-add-title', 'Enter');
+  check(await waitToast(page, 'Added to Work: Laminate the seating plan'), tag + ': one more task added on the Desk');
+  await deskIdle(page);
+  const capV = await deskView(page);
+  const capFirst = await page.textContent('#desk-board .dk-item[data-key^="a:"] .dk-title');
+  const capAfter = await openAdded();
+  check(capBefore === 20 && capAfter === 20 && capFirst === 'Laminate the seating plan' && deskConsistent(capV),
+    tag + ': Added by you stays at 20 open tasks, the new one first ' + JSON.stringify([capBefore, capAfter, capFirst, capV.meter]));
+  await clearToasts(page);
+}
+
+async function downloadCheck(page, selector, baseName, xlsx, tag, sheetName, cellCheck, minCols) {
   const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 8000 }), page.click(selector)]);
   const name = dl.suggestedFilename();
   const dest = path.join(DOWNLOADS, tag + '-' + name);
@@ -482,7 +845,7 @@ async function downloadCheck(page, selector, baseName, xlsx, tag, sheetName, cel
       const wb = XLSX.read(buf, { type: 'buffer', cellStyles: true }); // cellStyles is needed to read !cols back
       const ws = wb.Sheets[wb.SheetNames[0]];
       check(wb.SheetNames.length === 1 && wb.SheetNames[0] === sheetName, tag + ': workbook has one sheet "' + sheetName + '"');
-      check(Array.isArray(ws['!cols']) && ws['!cols'].length >= 4, tag + ': column widths set');
+      check(Array.isArray(ws['!cols']) && ws['!cols'].length >= (minCols || 4), tag + ': column widths set');
       check(!!cellCheck(ws), tag + ': hyperlink / header cell present in ' + name);
     } catch (e) { fail(tag + ': could not read back ' + name + ': ' + e.message); }
   } else {
@@ -506,6 +869,7 @@ async function main() {
     await runViewport(browser, url, { name: 'mobile', width: 390, height: 844 }, { xlsx: xlsxAvailable });
     await runViewport(browser, url, { name: 'desktop', width: 1280, height: 900 }, { xlsx: xlsxAvailable });
     await runViewport(browser, url, { name: 'mobile-dark', width: 390, height: 844, dark: true }, { xlsx: xlsxAvailable, screenshotsOnly: true });
+    await runViewport(browser, url, { name: 'desktop-dark', width: 1280, height: 900, dark: true }, { xlsx: xlsxAvailable, screenshotsOnly: true });
     await runViewport(browser, url, { name: 'desktop-noxlsx', width: 1280, height: 900 }, { xlsx: false });
   } finally {
     await browser.close();

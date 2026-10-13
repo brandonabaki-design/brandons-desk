@@ -22,7 +22,7 @@ work Chat   ─┴─▶ Apps Script trigger (06:15 Dubai, weekdays) ─▶ Inbo
 personal Gmail ─┐                                                 ▼
 work Calendar ──┴─▶ Claude daily routine (06:45 Dubai) ─▶ Work / Personal tabs (new tasks, Inbox rows promoted or ignored)
                                                                   │
-web app (Today / Inbox / Add / Import / Agenda / Newsletter) ◀────┘  ← Brandon ticks off, adds, imports, edits
+web app (Desk/Tasks/Inbox/Import/Agenda/Newsletter/History) ◀─────┘  ← Brandon ticks off, adds, imports, edits
                                                                   │
 Claude weekly routine (Mon 18:10 Dubai) ─▶ Agenda tab ◀───────────┘  → web app "Download .xlsx"
 ```
@@ -93,6 +93,10 @@ Keys: `ALLOWED_EMAILS`, `TIMEZONE`, `MEETING_DAY`, `GMAIL_QUERY`, `GMAIL_LOOKBAC
 
 Trigger runs and errors. The app trims the tab to the newest 1 500 rows when it exceeds 2 000.
 
+### `Desk` (sheetId 6) — Key / JSON / Built
+
+The day's Desk as the Claude morning build publishes it, one `desk-data` field per row as compact JSON (`items` split into `items`, `items2`, … under 45 000 characters per cell). Column B (and C) formatted as plain text. Written only by the routine (it clears `Desk!A2:C` and rewrites every row on each build); the web app only reads it. `setup()` / `ensureSchema()` create the tab when it is missing; `healSheet` never touches it. Full contract: `docs/DESK.md` section 1.
+
 ### Rows written by other tools
 
 Claude's routines append rows with the Sheets API. They always write the same column order, but may leave ID, Created, Status, Priority or Updated blank. `healSheet(category)` runs at the start of every web-app read and in the capture trigger: fills ID, Created = today, Status = Open, Priority = Normal, Updated = now, trims whitespace, and reports what it fixed in the Log.
@@ -110,6 +114,7 @@ apps-script/
   Import.gs            importText(), importHtml()
   Agenda.gs            week maths, agenda draft builder, rule-based questions, save/load Agenda tab
   Newsletter.gs        newsletter selection + markdown
+  Desk.gs              the Desk page (docs/DESK.md): read the Desk tab, overlay tracker rows, tick items into Work/Personal, expandDeskLink
   Api.gs               doGet(), the google.script.run entry points, auth guard, input validation, error wrapping
   Setup.gs             setup(): create or adopt sheet, apply schema, store SHEET_ID, install triggers; selfTest()
   Util.gs              dates (Dubai), text normalisation, similarity, id generation, logging
@@ -151,6 +156,8 @@ Task object returned everywhere:
 | `getNewsletter` | `{from?, to?}` | `{tasks:[Task], markdown}` | Work tasks with Newsletter ticked, Done in range (default: last 28 days) plus Open ones; markdown grouped by project with notes and links. |
 | `runCaptureNow` | `{}` | `{gmail:n, chat:n, chatMessages:n, chatMode:"api"\|"email"\|"off", errors:[]}` | Same as the trigger, on demand. `chat` = Chat Inbox rows (one per conversation), `chatMessages` = messages in them (section 6). |
 | `getLog` | `{limit?}` | `{rows:[{time,fn,level,message}]}` | Newest first, default 100. |
+| `getDesk` | `{}` | `{ok:true, desk, added:[Task], builtAt, builtDate, stale, deskUrl}` or `{ok:false, reason:"empty"\|"invalid", message, deskUrl, added}` | Runs `healSheet` on both tabs, then reads the Desk tab. Contract: `docs/DESK.md` section 2. |
+| `setDeskItemDone` | `{itemId, done, note?}` | `{task}` | Runs `healSheet` on both tabs, resolves (or creates) the item's tracker row, then `completeTask` / `reopenTask`. Contract: `docs/DESK.md` section 2. |
 
 ## 6. Rules
 
@@ -214,7 +221,8 @@ Single page, mobile first (≥ 360 px), works on desktop. Font: DM Sans from Goo
 
 Pages (top tabs; the hash in the URL selects the page):
 
-1. **Today** — quick-add bar (title, category toggle defaulting to `DEFAULT_QUICKADD_CATEGORY`, Enter to add). Two columns on desktop, stacked on mobile: Work | Personal. Groups within a column: Overdue, Due today, Open, then a collapsed "Done today". Each task row: checkbox, title, chips (project, due, High, Newsletter, Discuss), source link icon. Tap the title to expand an inline editor (details, project with datalist, due, priority, link, Newsletter, Discuss, note, Move to other list, Drop). Ticking the checkbox opens a small note field with "Done" and "Done, no note" buttons; undo appears for 10 s. Search box filters both columns. Counts in the tab label.
+0. **Desk** — the home page (shown when the URL has no hash): the Claude morning build's Desk in the routine page's layout, read from the Desk tab; ticks and new tasks save straight to Work/Personal. Contract: `docs/DESK.md` section 3; details in `docs/UI.md`.
+1. **Tasks** (hash `#today`; was "Today") — quick-add bar (title, category toggle defaulting to `DEFAULT_QUICKADD_CATEGORY`, Enter to add). Two columns on desktop, stacked on mobile: Work | Personal. Groups within a column: Overdue, Due today, Open, then a collapsed "Done today". Each task row: checkbox, title, chips (project, due, High, Newsletter, Discuss), source link icon. Tap the title to expand an inline editor (details, project with datalist, due, priority, link, Newsletter, Discuss, note, Move to other list, Drop). Ticking the checkbox opens a small note field with "Done" and "Done, no note" buttons; undo appears for 10 s. Search box filters both columns. Counts in the tab label.
 2. **Inbox** — New items from capture: From, Subject, Snippet, link. Buttons: Promote (choose category Work/Personal, edit title, optional project) and Ignore. "Run capture now" button with a result toast (counts + chatMode).
 3. **Import** — paste text (textarea) or choose an .html file; date picker for Created (default today); live preview table (checkbox include, category select, title, project, done?) → Import. Result summary.
 4. **Agenda** — meeting date picker (default next MEETING_DAY), window shown. Sections as editable lists (Done and In progress are read-only drafts but items can be removed; Questions and Notes can be edited/added/reordered; Documents editable). Buttons: Regenerate draft, Save, Download .xlsx, Copy as text. The .xlsx has one sheet "Agenda", title rows (meeting date, window, director name if set), then Section / Item / Detail / Link columns with real hyperlinks and column widths set. The header row is plain text: the pinned SheetJS 0.18.5 community build cannot write cell styles (research-notes.md), so it is not bold.
@@ -225,7 +233,7 @@ Every write shows a toast and updates the local state without a full reload. Fai
 
 ## 9. Tests (Node, no Google services)
 
-`npm test` runs `tests/run.js`: it builds a sandbox (`node:vm`) with a mock of the Apps Script globals (`SpreadsheetApp` in-memory with the six tabs and headers, `Utilities.formatDate` via `Intl.DateTimeFormat` with the time zone, `LockService`, `PropertiesService`, `Logger`, `Session`, `GmailApp`, `UrlFetchApp`, `ScriptApp`, `HtmlService`, `CalendarApp` stubs), loads every `apps-script/*.gs` into it, then runs the test files in `tests/*.test.js` with `node:assert`. Minimum coverage:
+`npm test` runs `tests/run.js`: it builds a sandbox (`node:vm`) with a mock of the Apps Script globals (`SpreadsheetApp` in-memory with the seven tabs and headers, the Desk tab empty, `Utilities.formatDate` via `Intl.DateTimeFormat` with the time zone, `LockService`, `PropertiesService`, `Logger`, `Session`, `GmailApp`, `UrlFetchApp`, `ScriptApp`, `HtmlService`, `CalendarApp` stubs), loads every `apps-script/*.gs` into it, then runs the test files in `tests/*.test.js` with `node:assert`. Minimum coverage:
 
 - id generation and uniqueness; healSheet fills blanks
 - date helpers: today in Dubai across the UTC midnight boundary; weekOf/meetingDate for every weekday; window maths
@@ -235,6 +243,9 @@ Every write shows a toast and updates the local state without a full reload. Fai
 - agenda draft: each of the 8 question rules fires on a fixture and not otherwise; Documents dedupe; saved rows win
 - capture: Gmail fixture (threads where I replied last are skipped; automated senders skipped; dedupe against Inbox and tasks); Chat API fixture; Chat conversations (one row per space, the substantive filter on every example of the first live run, incremental runs, per-message keys of the first live run, a deleted newest message, two overlapping runs in either order, snippet truncation keeping the newest text, group-chat subject and senders, the SPACE @mention rule, `chat`/`chatMessages` counts); Chat 403 → email fallback parses the notification fixture
 - guard(): allowed email passes, other email throws, blank email behaviour
+- Desk (`tests/desk.test.js`, fictional fixtures `tests/fixtures/desk-data.json` + `desk-rows.js`): ensureSchema creates the Desk tab, healSheet ignores it; getDesk empty / invalid (key named, logged) / split items rows in numeric order / defaults / stale in Dubai; matching by task ID then `desk:<id>` in either tab; `added`; setDeskItemDone complete, reopen and create-on-tick (each Source mapping, Due and Priority rules); expandDeskLink for `wt:`/`w:`/`p:`/https and rejection of `javascript:`/`data:`
+- Client/server parity: the client's `expandDeskLink` / `deskHref` (App.html pure block) return exactly what the server's `expandDeskLink` returns, on fixed inputs, every fixture link and a deterministic fuzz (`tests/desk.test.js`)
+- End to end (`tests/e2e.js`): the real page against the real entry points at desktop and phone widths (and with SheetJS blocked), including a Desk scenario: the Desk tab written as the routine writes it (items split over several rows, rows in any order), the Desk as landing page, lanes and counts, ticks and unticks of an item with a row by task ID, one with only a `desk:<id>` row and items with no row (the created rows' fields checked), the add box, the agenda copy and Download .xlsx read back, the stale, invalid and empty states, and the Tasks tab alongside
 - esc() and link sanitiser (client code is also loaded into a jsdom-free check by extracting the pure helpers in `App.html` between the `/* pure:start */` and `/* pure:end */` markers, which the test harness evals)
 
 ## 10. Setup (what the README gives Brandon, in order; clasp 3.4.x command names)

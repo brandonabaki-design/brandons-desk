@@ -1,5 +1,6 @@
 'use strict';
 const { findUnsafe } = require('./fixtures/helpers');
+const { deskData, seedDesk } = require('./fixtures/desk-rows');
 
 const NOW = '2026-10-08T06:00:00Z';
 
@@ -35,6 +36,7 @@ module.exports = async function (t) {
     sb.gs.addTask({ category: 'Work', title: 'Seed task', due: '2026-10-09', link: 'https://x' });
     sb.mock.seed('Inbox', [['I-1', new Date(), 'Gmail', 'A', 'S', 'snip', 'https://l', 'gmail:1', 'New', '', 'Work']]);
     sb.mock.seed('Config', [['CHAT_ENABLED', 'FALSE', '']]);
+    seedDesk(sb, deskData());
     sb.gs.log('x', 'INFO', 'y');
     const calls = {
       getBootstrap: {},
@@ -55,7 +57,9 @@ module.exports = async function (t) {
       regenerateAgenda: {},
       getNewsletter: {},
       runCaptureNow: {},
-      getLog: { limit: 5 }
+      getLog: { limit: 5 },
+      getDesk: {},
+      setDeskItemDone: { itemId: 'plumber', done: true }
     };
     const id = sb.gs.listTasks({ category: 'Work' }).tasks[0].id;
     calls.updateTask = { category: 'Work', id: id, patch: { note: 'n' } };
@@ -124,7 +128,7 @@ module.exports = async function (t) {
 
   await t.test('every read entry point heals the task tabs first (SPEC 3)', (sb, assert) => {
     const blank = () => ['', '', 'Needs healing', '', '', '', '', '', '', '', '', '', '', '', '', ''];
-    const cases = [['listTasks', { category: 'Work' }], ['listTasks', {}], ['getAgenda', {}], ['regenerateAgenda', {}], ['getNewsletter', {}]];
+    const cases = [['listTasks', { category: 'Work' }], ['listTasks', {}], ['getAgenda', {}], ['regenerateAgenda', {}], ['getNewsletter', {}], ['getDesk', {}]];
     cases.forEach(([name, input]) => {
       const fresh = t.createSandbox({ now: NOW });
       fresh.mock.seed('Work', [blank()]);
@@ -222,6 +226,32 @@ module.exports = async function (t) {
     });
     assert.deepEqual(problems, []);
     assert.ok(checked >= 20, 'the check saw ' + checked + ' functions');
+  });
+
+  await t.test('every server function the client calls is an Api.gs entry point, and both browser shims know it (static check)', (sb, assert) => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const root = path.join(__dirname, '..');
+    const read = (f) => fs.readFileSync(path.join(root, f), 'utf8');
+    const app = read('apps-script/App.html');
+    // api('name', …) and api(cond ? 'a' : 'b', …): every quoted name in the first argument
+    const called = new Set();
+    const re = /\bapi\(([^,)]*)/g;
+    let m;
+    while ((m = re.exec(app))) (m[1].match(/'(\w+)'/g) || []).forEach((q) => called.add(q.slice(1, -1)));
+    assert.ok(called.has('getDesk') && called.has('setDeskItemDone') && called.has('completeTask') && called.size >= 18, 'found ' + [...called].join(', '));
+    const apiGs = read('apps-script/Api.gs');
+    const e2eList = JSON.parse(/const API = (\[[^\]]*\])/.exec(read('tests/e2e.js'))[1].replace(/'/g, '"').replace(/\s+/g, ' '));
+    const mockSrc = read('tests/ui/mock-server.js');
+    const mockHandlers = mockSrc.slice(mockSrc.indexOf('var handlers = {'));
+    const problems = [];
+    called.forEach((name) => {
+      if (typeof sb.gs[name] !== 'function') problems.push(name + ': no such server function');
+      else if (!new RegExp('^function ' + name + '\\(input\\) \\{\\n  return apiCall_\\(\'' + name + '\'', 'm').test(apiGs)) problems.push(name + ': not an apiCall_ entry point in Api.gs');
+      if (e2eList.indexOf(name) < 0) problems.push(name + ': missing from the tests/e2e.js google.script.run shim');
+      if (!new RegExp('\\n    ' + name + ':').test(mockHandlers)) problems.push(name + ': missing from the tests/ui/mock-server.js handlers');
+    });
+    assert.deepEqual(problems, []);
   });
 
   await t.test('public helpers throw "Not allowed" for an outsider and touch nothing', (sb, assert) => {

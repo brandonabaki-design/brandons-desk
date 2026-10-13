@@ -7,9 +7,9 @@ const GS_DIR = path.join(__dirname, '..', 'apps-script');
 
 const API_FUNCTIONS = ['getBootstrap', 'listTasks', 'addTask', 'updateTask', 'completeTask', 'reopenTask', 'dropTask',
   'moveTask', 'importText', 'importHtml', 'listInbox', 'promoteInbox', 'ignoreInbox', 'getAgenda', 'saveAgenda',
-  'regenerateAgenda', 'getNewsletter', 'runCaptureNow', 'getLog'];
+  'regenerateAgenda', 'getNewsletter', 'runCaptureNow', 'getLog', 'getDesk', 'setDeskItemDone'];
 
-const EXPECTED_FILES = ['Agenda.gs', 'Api.gs', 'Capture.gs', 'Chat.gs', 'Config.gs', 'Import.gs', 'Newsletter.gs',
+const EXPECTED_FILES = ['Agenda.gs', 'Api.gs', 'Capture.gs', 'Chat.gs', 'Config.gs', 'Desk.gs', 'Import.gs', 'Newsletter.gs',
   'Setup.gs', 'Sheet.gs', 'Tasks.gs', 'Util.gs'];
 
 module.exports = async function (t) {
@@ -69,6 +69,8 @@ module.exports = async function (t) {
     assert.equal(Object.keys(COLUMN.INBOX).length, 11);
     assert.equal(COLUMN.INBOX.categoryHint, 10);
     assert.equal(Object.keys(COLUMN.AGENDA).length, 8);
+    assert.deepEqual(COLUMN.DESK, { key: 0, json: 1, built: 2 });
+    assert.equal(sb.eval('DESK_URL'), 'https://claude.ai/artifact/3mG2UW54W6WkRFMAqkqxzr');
     assert.equal(sb.eval('DEFAULT_SHEET_ID'), '1012Dbz6HB4dXD12Q5ClKm9LytSqgLHDIVz5_n6bHZ6w');
   });
 

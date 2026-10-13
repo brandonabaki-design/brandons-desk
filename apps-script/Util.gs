@@ -369,12 +369,16 @@ function unguardCell(v) {
   return typeof v === 'string' && v.charAt(0) === ' ' && v.charAt(1) === '=' ? v.slice(1) : v;
 }
 
-/** Only http/https links survive; everything else becomes ''. */
+/**
+ * Only http/https links survive; everything else becomes ''. Whitespace, control characters,
+ * quotes and angle brackets are removed from a link that survives. The client's
+ * sanitiseStoredLink (App.html) applies the same rule, so a Desk link shows as the URL stored.
+ */
 function sanitiseLink(url) {
   const s = str(url).trim();
   const lower = s.toLowerCase();
   if (lower.indexOf('https://') === 0 || lower.indexOf('http://') === 0) {
-    return s.replace(/[\s<>"']/g, '');
+    return s.replace(/[\s<>"'\u0000-\u001f\u007f]/g, '');
   }
   return '';
 }

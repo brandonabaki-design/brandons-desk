@@ -13,6 +13,12 @@ const TIMEZONE = 'Asia/Dubai';
 
 const APP_TITLE = "Brandon's Desk";
 
+/**
+ * The Desk page the Claude morning build publishes (docs/DESK.md). The web app links to it for
+ * "Rebuild now" and when the Desk tab is empty or stale.
+ */
+const DESK_URL = 'https://claude.ai/artifact/3mG2UW54W6WkRFMAqkqxzr';
+
 /** Tab names, in creation order. */
 const TABS = {
   WORK: 'Work',
@@ -20,10 +26,11 @@ const TABS = {
   INBOX: 'Inbox',
   AGENDA: 'Agenda',
   CONFIG: 'Config',
-  LOG: 'Log'
+  LOG: 'Log',
+  DESK: 'Desk'
 };
 
-const TAB_ORDER = [TABS.WORK, TABS.PERSONAL, TABS.INBOX, TABS.AGENDA, TABS.CONFIG, TABS.LOG];
+const TAB_ORDER = [TABS.WORK, TABS.PERSONAL, TABS.INBOX, TABS.AGENDA, TABS.CONFIG, TABS.LOG, TABS.DESK];
 
 /** Exact header rows (docs/SPEC.md section 3). */
 const TASK_HEADERS = ['ID', 'Created', 'Title', 'Details', 'Source', 'Link', 'Status', 'Done', 'Note',
@@ -35,7 +42,9 @@ const HEADERS = {
   Inbox: ['ID', 'Captured', 'Source', 'From', 'Subject', 'Snippet', 'Link', 'Source key', 'Status', 'Task ID', 'Category hint'],
   Agenda: ['Week of', 'Section', 'Order', 'Item', 'Detail', 'Link', 'Task ID', 'Generated'],
   Config: ['Key', 'Value', 'Notes'],
-  Log: ['Time', 'Function', 'Level', 'Message']
+  Log: ['Time', 'Function', 'Level', 'Message'],
+  // docs/DESK.md section 1: written only by the Claude morning build, read by getDesk().
+  Desk: ['Key', 'JSON', 'Built']
 };
 
 /** 0-based column indexes per tab. */
@@ -50,7 +59,8 @@ const COLUMN = {
   },
   AGENDA: { weekOf: 0, section: 1, order: 2, item: 3, detail: 4, link: 5, taskId: 6, generated: 7 },
   CONFIG: { key: 0, value: 1, notes: 2 },
-  LOG: { time: 0, fn: 1, level: 2, message: 3 }
+  LOG: { time: 0, fn: 1, level: 2, message: 3 },
+  DESK: { key: 0, json: 1, built: 2 }
 };
 
 /** Which column map a tab uses. */
@@ -60,7 +70,8 @@ const TAB_COLUMNS = {
   Inbox: 'INBOX',
   Agenda: 'AGENDA',
   Config: 'CONFIG',
-  Log: 'LOG'
+  Log: 'LOG',
+  Desk: 'DESK'
 };
 
 const CATEGORIES = ['Work', 'Personal'];

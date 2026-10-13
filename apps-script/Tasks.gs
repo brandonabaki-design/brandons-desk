@@ -180,16 +180,22 @@ function optionalBoolean_(value) {
  * Work and Personal alike), so the key map holds the other tab's rows too and a known key
  * returns the task that already carries it whichever list it lives in. Title similarity
  * stays per tab.
+ *
+ * options.titleMatch (server-side callers only; a function cannot cross google.script.run)
+ * narrows the title dedupe: only Open tasks for which it returns true count as similar. The
+ * Source-key dedupe is unaffected. The Desk uses it so a tick never claims a task that
+ * belongs to something else (docs/DESK.md 2).
  */
 function createTasks(category, specs, options) {
   guard();
   const opts = options || {};
   const tabName = taskTabName(category);
   const config = opts.config || readConfig();
-  return withLock(() => createTasksLocked_(tabName, specs, config));
+  const titleMatch = typeof opts.titleMatch === 'function' ? opts.titleMatch : null;
+  return withLock(() => createTasksLocked_(tabName, specs, config, titleMatch));
 }
 
-function createTasksLocked_(tabName, specs, config) {
+function createTasksLocked_(tabName, specs, config, titleMatch) {
   const existing = readTasks(tabName);
   const ids = new Set(existing.map((t) => t.id).filter(Boolean));
   const openTasks = existing.filter((t) => t.status === 'Open');
@@ -215,7 +221,7 @@ function createTasksLocked_(tabName, specs, config) {
     }
     const sourceKey = truncate(str(spec.sourceKey).trim(), SOURCE_KEY_MAX);
     let dup = sourceKey ? byKey.get(sourceKey) : null;
-    if (!dup) dup = openTasks.find((t) => isSimilarTitle(t.title, title)) || null;
+    if (!dup) dup = openTasks.find((t) => (!titleMatch || titleMatch(t)) && isSimilarTitle(t.title, title)) || null;
     if (dup) {
       skipped.push({ line: line, reason: 'duplicate', task: dup });
       return;

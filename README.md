@@ -125,7 +125,7 @@ Chat needs no extra setup: the manifest's Chat advanced service switches the API
 
 ## Everyday use
 
-- **The pages.** Today (quick-add, tick off, edit), Inbox (promote or ignore captured mail and chat, *Run capture now*), Import (paste a list or choose an .html/.txt file), Agenda (next Tuesday's draft, edit, Save, Download .xlsx, Copy as text), Newsletter (Copy as Markdown, Download .xlsx), History (Done/Dropped, reopen).
+- **The pages.** Desk (the home page: the morning build's Desk in the same layout as the routine's page; ticks and the add box save straight to the Work/Personal tabs), Tasks (was Today: quick-add, tick off, edit), Inbox (promote or ignore captured mail and chat, *Run capture now*), Import (paste a list or choose an .html/.txt file), Agenda (next Tuesday's draft, edit, Save, Download .xlsx, Copy as text), Newsletter (Copy as Markdown, Download .xlsx), History (Done/Dropped, reopen).
 - **Changing Config.** Edit the *Value* column of the Config tab in the sheet. The keys and the *Notes* column are written by `setup()`; the app reads the tab on every request (12 rows, nothing cached between requests), so a change applies to the next click. Keys: `ALLOWED_EMAILS`, `TIMEZONE`, `MEETING_DAY`, `GMAIL_QUERY`, `GMAIL_LOOKBACK_DAYS`, `CHAT_ENABLED`, `CHAT_LOOKBACK_DAYS`, `NEWSLETTER_KEYWORDS`, `DEFAULT_QUICKADD_CATEGORY`, `PROJECTS`, `DIRECTOR_NAME`. Comma-separated where plural. `TIMEZONE` must be an IANA id such as `Asia/Dubai`; anything else falls back to Asia/Dubai with a WARN in the Log.
 - **Running capture by hand.** Inbox page → **Run capture now** (the toast shows how many Gmail threads and Chat conversations it added, and the Chat mode: `api`, `email` or `off`; each Chat conversation is one Inbox row holding its new messages, and one-word replies, greetings and phone numbers are left out), or in the editor run `runCaptureNow`. The scheduled `captureInbox` skips Saturdays and Sundays; *Run capture now* always runs.
 - **Releasing a code change.** `npm test`, then step 6.
@@ -154,9 +154,9 @@ Chat needs no extra setup: the manifest's Chat advanced service switches the API
 
 | Command | What it runs |
 |---|---|
-| `npm test` | `tests/run.js` (unit tests over the Apps Script mock, no Google services) and then `tests/e2e.js` (the real page in headless Chromium talking to the real server code through a `google.script.run` shim) |
+| `npm test` | `tests/run.js` (unit tests over the Apps Script mock, no Google services) and then `tests/e2e.js` (the real page in headless Chromium talking to the real server code through a `google.script.run` shim, including the Desk home page) |
 | `npm run test:unit` | only `tests/run.js`; `node tests/run.js <filter>` runs matching test files |
-| `npm run test:e2e` | only the end-to-end check |
+| `npm run test:e2e` | only the end-to-end check (`E2E_ONLY=desk` or `E2E_ONLY=tasks` runs one half) |
 | `npm run ui` | `tests/ui/render.js`: the page against a fixture shim (HTML file import, dark mode, downloads read back, SheetJS missing, boot failure); screenshots under `/tmp/claude-0/brandons-desk-ui/` |
 
 The browser checks need a Chromium: after `npm install`, run `npx playwright install chromium` once (about 150 MB), or set `CHROMIUM_PATH` to a Chrome/Chromium binary. Nothing in the tests calls Google.
@@ -164,3 +164,5 @@ The browser checks need a Chromium: after `npm install`, run `npx playwright ins
 ## Claude routines
 
 The Desk morning build (weekdays 06:45 Dubai, or the Desk's "Rebuild now" button) builds your daily Desk and keeps this sheet in step with it: new items appear in the web app, ticks flow both ways, and Andy's agenda lands in the Agenda tab. See `docs/routines.md`; nothing needs setting up in the Routines page.
+
+The web app's Desk page reads the **Desk** tab, which the morning build rewrites on every run (`docs/DESK.md`). After the first release that includes the Desk page (`clasp push -f` and step 6), open the web app once, or run `setup` in the editor, so the Desk tab exists before the next 06:45 build writes to it. Until that build runs, the Desk page shows a "No Desk yet" panel with a link to the routine's Desk page, and its add box already works.

@@ -209,6 +209,7 @@ module.exports = async function (t) {
     assert.equal(sanitiseLink(''), '');
     assert.equal(sanitiseLink(null), '');
     assert.equal(sanitiseLink('https://x.com/a"onclick="x'), 'https://x.com/aonclick=x');
+    assert.equal(sanitiseLink('https://x.com/a\u0001b\u007fc\u001fd'), 'https://x.com/abcd', 'control characters are dropped too');
     const long = 'word '.repeat(200);
     assert.equal(cleanSnippet(long).length, 400);
     assert.equal(cleanSnippet('  a \n\n b\t c  '), 'a b c');

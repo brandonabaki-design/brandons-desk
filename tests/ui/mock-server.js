@@ -3,7 +3,9 @@
  * fixtures that mirror SPEC.md section 5. Injected by tests/ui/render.js before the page scripts run,
  * or inlined by `node tests/ui/assemble.js --mock` for a manual look in a browser.
  *
- * Test hooks on window.__mock: state (fixtures), latency (ms), failNext(fn, message), calls (log).
+ * Test hooks on window.__mock: state (fixtures), latency (ms), failNext(fn, message), calls (log), deskMode.
+ * The Desk (getDesk / setDeskItemDone, docs/DESK.md) is a fictional board; ?desk=empty|invalid|stale|minimal in the
+ * page URL (or window.__mock.deskMode) switches what getDesk answers.
  */
 (function () {
   'use strict';
@@ -44,12 +46,12 @@
     task('Work', 1, { title: 'Send AI Learning Hub launch note to staff', project: 'AI Learning Hub', due: d(0), newsletter: true, discuss: true, priority: 'High', source: 'Gmail',
       link: 'https://mail.google.com/mail/u/bbaki@aisa.sch.ae/#all/18f3a1b2c3d4e5f6', details: 'Sarah asked for the numbers before Tuesday.', sourceKey: 'gmail:18f3a1b2c3d4e5f6', created: d(-6) }),
     task('Work', 2, { title: 'Book the robotics lab for the Grade 9 showcase', project: 'Robotics Club', due: d(-3), source: 'Chat', link: 'https://chat.google.com/room/AAAAxyz123', sourceKey: 'chat:spaces/AAAAxyz123/messages/abc.def', created: d(-9) }),
-    task('Work', 3, { title: 'Review Grade 10 Design unit plan draft', project: 'Grade 10 Design', due: d(-1), priority: 'High', link: 'https://docs.google.com/document/d/1AbCdEf/edit', details: 'Lina shared the draft rubric on Thursday.', created: d(-4) }),
+    task('Work', 3, { title: 'Review Grade 10 Design unit plan draft', project: 'Grade 10 Design', due: d(-1), priority: 'High', source: 'Claude', link: 'https://docs.google.com/document/d/1AbCdEf/edit', details: 'Lina shared the draft rubric on Thursday.', created: d(-4) }),
     task('Work', 4, { title: 'Prepare for PD session on AI tools', project: 'PD', due: d(2), newsletter: true, source: 'Calendar', link: 'https://www.google.com/calendar/event?eid=abc123', sourceKey: 'cal:abc123', created: d(-2) }),
     task('Work', 5, { title: 'Reply to Fatima Al Ali about the AI club trial', due: d(0), source: 'Gmail', link: 'https://mail.google.com/mail/u/bbaki@aisa.sch.ae/#all/18f3a1b2c3d4e5aa', sourceKey: 'gmail:18f3a1b2c3d4e5aa', created: d(-1) }),
-    task('Work', 6, { title: 'Order replacement micro:bits', project: 'Robotics Club', discuss: true, details: 'Twelve units are dead; budget code needed.', created: d(-12) }),
-    task('Work', 7, { title: 'Draft newsletter section on student AI projects', project: 'AI Learning Hub', newsletter: true, priority: 'Low', created: d(-3) }),
-    task('Work', 8, { title: 'Update the department website links', details: 'Three broken links reported by the comms team.', created: d(-20), updated: d(-10) + 'T10:00:00+04:00' }),
+    task('Work', 6, { title: 'Order replacement micro:bits', project: 'Robotics Club', discuss: true, source: 'Claude', details: 'Twelve units are dead; budget code needed.', created: d(-12) }),
+    task('Work', 7, { title: 'Draft newsletter section on student AI projects', project: 'AI Learning Hub', newsletter: true, priority: 'Low', source: 'Claude', created: d(-3) }),
+    task('Work', 8, { title: 'Update the department website links', source: 'Import', details: 'Three broken links reported by the comms team.', created: d(-20), updated: d(-10) + 'T10:00:00+04:00' }),
     task('Work', 9, { title: 'Share workshop photos with comms team', project: 'AI Learning Hub', newsletter: true, status: 'Done', done: d(0), note: 'Sent 12 photos', updated: NOW, created: d(-5) }),
     task('Work', 10, { title: 'Submit term 1 assessment calendar', status: 'Done', done: d(0), note: 'Submitted to Omar', updated: d(0) + 'T08:10:00+04:00', created: d(-8) }),
     task('Work', 11, { title: 'Set up Chat space for Hub mentors', project: 'AI Learning Hub', discuss: true, status: 'Done', done: d(-2), link: 'https://chat.google.com/room/AAAAmentors', note: 'Eight mentors joined', created: d(-7) }),
@@ -58,17 +60,19 @@
     task('Work', 14, { title: 'Migrate shared drive folders', status: 'Dropped', note: 'Superseded by the IT migration plan', created: d(-30) }),
     task('Work', 15, { title: 'Write Hub workshop recap for newsletter', project: 'AI Learning Hub', newsletter: true, status: 'Done', done: d(-20), note: 'Published in the September issue', created: d(-25) }),
     task('Work', 16, { title: 'Check projector in room 204', link: 'javascript:alert(1)', details: 'Reported by Daniel; flickers after 10 minutes.', created: d(0), updated: NOW }),
-    task('Work', 17, { title: 'Coordinate with the IT team about single sign-on for the new AI Learning Hub portal and confirm the rollout timeline with leadership', project: 'AI Learning Hub', priority: 'High', discuss: true, created: d(-1) }),
-    task('Personal', 1, { title: 'Renew car registration', project: 'Home', due: d(-6), priority: 'High', created: d(-14) }),
+    task('Work', 17, { title: 'Coordinate with the IT team about single sign-on for the new AI Learning Hub portal and confirm the rollout timeline with leadership', project: 'AI Learning Hub', priority: 'High', discuss: true, source: 'Claude', created: d(-1) }),
+    task('Personal', 1, { title: 'Renew car registration', project: 'Home', due: d(-6), priority: 'High', source: 'Claude', created: d(-14) }),
     task('Personal', 2, { title: 'Call the dentist to reschedule', due: d(0), created: d(-3) }),
     task('Personal', 3, { title: 'Pay the electricity bill', due: d(1), link: 'https://www.dewa.gov.ae/en/consumer/billing', created: d(-2) }),
     task('Personal', 4, { title: 'Buy a birthday present for Maya', due: d(4), created: d(-1) }),
-    task('Personal', 5, { title: 'Plan the weekend hike', priority: 'Low', created: d(-6) }),
-    task('Personal', 6, { title: 'Book flights for December', project: 'Home', details: 'Compare Emirates and Etihad for 18–28 Dec.', created: d(-9) }),
+    task('Personal', 5, { title: 'Plan the weekend hike', priority: 'Low', source: 'Claude', created: d(-6) }),
+    task('Personal', 6, { title: 'Book flights for December', project: 'Home', source: 'Claude', details: 'Compare Emirates and Etihad for 18–28 Dec.', created: d(-9) }),
     task('Personal', 7, { title: 'Sort out gym membership', status: 'Done', done: d(0), updated: NOW, created: d(-4) }),
     task('Personal', 8, { title: 'Return library books', status: 'Done', done: d(-3), created: d(-10) }),
     task('Personal', 9, { title: 'Fix the garden tap', status: 'Dropped', note: 'Landlord is handling it', created: d(-21) }),
-    task('Personal', 10, { title: "Read 'The Alignment Problem'", created: d(-30) })
+    task('Personal', 10, { title: "Read 'The Alignment Problem'", source: 'Import', created: d(-30) }),
+    // Ticked on the Desk two days ago: the board item "swim" finds it by its Source key and shows ticked.
+    task('Personal', 11, { title: 'Confirm the swim lesson slot', source: 'Claude', sourceKey: 'desk:swim', status: 'Done', done: d(-2), created: d(-4), updated: d(-2) + 'T07:10:00+04:00' })
   ];
   tasks.forEach(function (t, i) { t.row = i + 2; });
 
@@ -138,6 +142,176 @@
   }
 
   var log = [{ time: NOW, fn: 'captureInbox', level: 'INFO', message: 'gmail 4, chat 2, chatMode api' }, { time: d(-1) + 'T06:16:00+04:00', fn: 'healSheet', level: 'INFO', message: 'Work: filled 1 ID' }];
+
+  // ---- The Desk (docs/DESK.md): a fictional board shaped like the routine's desk-data -------------------------------
+  // Every tag kind (late, due, new, home, gh, list, '' source) and link kind (https, wt:, w:, p:, and a javascript: target that
+  // must render as plain text). Items with "task" point at fixture tasks; "swim" is found by Source key desk:swim; the rest have
+  // no tracker row yet, so ticking them makes setDeskItemDone create one.
+  var DESK_URL = 'https://claude.ai/artifact/3mG2UW54W6WkRFMAqkqxzr';
+  var CAL = 'https://calendar.google.com/calendar/r/day/2026/10/';
+  var desk = {
+    built: 'Sat 10 Oct, 9:12am Gulf time', eyebrow: 'Saturday 10 October 2026 · weekend',
+    sources: 'the AISA calendar, personal Gmail, the 06:15 Inbox capture and your tracker sheet',
+    lanes: [{ key: 'now', title: 'Do today' }, { key: 'reply', title: 'Reply & follow up' }, { key: 'later', title: 'This week' }],
+    rebuild: { trigger: 'trig_fixture' },
+    strip: [
+      { cls: 'now', d: 'Sat 10 · today', t: 'Weekend catch-up', s: 'Hub numbers and the unit plan review', href: CAL + '10' },
+      { cls: '', d: 'Mon 12', t: 'Hub numbers to the director', s: 'Board meets Wednesday', href: CAL + '12' },
+      { cls: '', d: 'Tue 13', t: 'Director meeting 10:00', s: 'Agenda below', href: CAL + '13' },
+      { cls: 'pd', d: 'Wed 14', t: 'PD day: AI tools', s: 'You present at 14:00', href: CAL + '14' },
+      { cls: 'brk', d: 'Thu 15 – Fri 16', t: 'Mid-term break', s: 'No classes', href: '' },
+      { cls: '', d: 'Mon 19', t: 'Back at school', s: 'Grade 10 project week', href: CAL + '19' },
+      { cls: 'odd', d: 'Tue 20', t: 'Grade 9 showcase', s: 'Robotics lab from 13:00', href: 'javascript:alert(1)' }
+    ],
+    items: [
+      { id: 'launch', lane: 'now', title: 'Send the Hub launch note to staff', why: 'Sarah wants it out before Tuesday, with the sign-up numbers in the first line.',
+        tags: [['due', 'Today'], ['', 'Email']], links: [['Thread', 'wt:18f3a1b2c3d4e5f6'], ['Numbers', 'https://docs.google.com/spreadsheets/d/1HubNumbersDemo/edit']], task: 'W-fx1abcde' },
+      { id: 'unitplan', lane: 'now', title: 'Review the Grade 10 Design unit plan', why: 'Lina shared the draft rubric on Thursday; the project starts Monday.',
+        tags: [['late', 'Since Fri 9'], ['', 'Docs']], links: [['Draft', 'https://docs.google.com/document/d/1AbCdEf/edit']], task: 'W-fx3abcde' },
+      { id: 'lab', lane: 'now', title: 'Book the robotics lab for the showcase', why: 'Omar asked in Chat on Wednesday; the lab fills up before the break.',
+        tags: [['late', 'Since Wed 7'], ['', 'Chat']], links: [['Chat', 'https://chat.google.com/room/AAAAxyz123']], task: 'W-fx2abcde' },
+      { id: 'pdslides', lane: 'now', title: 'Add the AI tools demo to the PD slides', why: 'Daniel wants it in before the Wednesday session; ten minutes, live.',
+        tags: [['new', 'New'], ['due', 'Today'], ['', 'Chat']], links: [['Slides', 'https://docs.google.com/presentation/d/1PdSlidesDemo/edit']] },
+      { id: 'dentist', lane: 'now', title: 'Call the dentist to reschedule', why: '', tags: [['due', 'Today'], ['home', 'Personal']], links: [], task: 'P-fx2abcde' },
+      { id: 'bill', lane: 'now', title: 'Pay the electricity bill', why: 'Due tomorrow; the reminder came on Thursday.', tags: [['due', 'Sun 11'], ['home', 'Personal'], ['', 'Email']],
+        links: [['Pay', 'https://www.dewa.gov.ae/en/consumer/billing'], ['Reminder', 'p:1812345678901234567']], task: 'P-fx3abcde' },
+      { id: 'fatima', lane: 'reply', title: 'Reply to Fatima about the AI club trial', why: 'Her daughter wants to join on Wednesdays; she asked what to bring.',
+        tags: [['due', 'Today'], ['', 'Email']], links: [['Thread', 'wt:18f3a1b2c3d4e5aa']], task: 'W-fx5abcde' },
+      { id: 'kits', lane: 'reply', title: 'Tell Omar how many micro:bit kits still work', why: 'Finance needs the count by Thursday for the reorder.',
+        tags: [['due', 'Thu 15'], ['', 'Email']], links: [['Thread', 'wt:18f3b0c1d2e3f4b6'], ['Inventory', 'https://docs.google.com/spreadsheets/d/1KitsDemo/edit']] },
+      { id: 'rubric', lane: 'reply', title: 'Share the Grade 10 rubric with Lina', why: 'She asked in the team chat; students start on Monday.',
+        tags: [['late', 'Since Thu 8'], ['', 'Chat']], links: [['Chat', 'https://chat.google.com/room/AAAAdesign10']] },
+      { id: 'swim', lane: 'reply', title: 'Confirm the swim lesson slot', why: 'The pool asked for Saturday or Sunday mornings.',
+        tags: [['home', 'Personal'], ['', 'Email']], links: [['Thread', 'p:1812345678901234999']] },
+      { id: 'survey', lane: 'reply', title: 'Check the link in the parent survey email', why: 'A parent said the form link does nothing on a phone.',
+        tags: [['', 'Email']], links: [['Survey', 'javascript:alert(1)'], ['Search mail', 'w:subject:(parent survey) newer_than:7d']] },
+      { id: 'invite', lane: 'later', title: 'Accept the GitHub invite for the Hub repo', why: 'Expires in six days.',
+        tags: [['gh', 'GitHub'], ['new', 'New']], links: [['Invite', 'https://github.com/orgs/example-school/invitation']] },
+      { id: 'sso', lane: 'later', title: 'Agree the single sign-on date with IT', why: 'Leadership wants a date before the Hub portal goes live.',
+        tags: [['list', 'Your list']], links: [['Portal plan', 'https://docs.google.com/document/d/1SsoPlanDemo/edit']], task: 'W-fx17abcd' },
+      { id: 'pdprep', lane: 'later', title: 'Prepare the PD session on AI tools', why: 'Forty minutes on Wednesday afternoon; the room has two projectors.',
+        tags: [['due', 'Mon 12'], ['', 'Calendar']], links: [['Event', 'https://www.google.com/calendar/event?eid=abc123']], task: 'W-fx4abcde' },
+      { id: 'rota', lane: 'later', title: 'Confirm the Hub mentor rota', why: 'Two mentors asked to swap weeks.',
+        tags: [['due', 'Mon 12'], ['list', 'Your list']], links: [['Mail search', 'w:subject:(mentor rota) newer_than:7d']] },
+      { id: 'flights', lane: 'later', title: 'Book flights for December', why: 'Compare the two airlines for 18–28 Dec.',
+        tags: [['home', 'Personal'], ['list', 'Your list']], links: [['Compare', 'https://www.example.com/flights']], task: 'P-fx6abcde' }
+    ],
+    cleared: ['Sent the assessment calendar to Omar', 'Shared the workshop photos with comms', 'Sorted out the gym membership'],
+    priorities: [
+      { title: 'AI Learning Hub launch', tag: ['due', 'Tue 13'], points: ['Launch note drafted; numbers still to add', 'Eight mentors joined the Chat space', 'Newsletter section due Friday'],
+        links: [['Hub plan', 'https://docs.google.com/document/d/1HubPlanDemo/edit'], ['Mentor space', 'https://chat.google.com/room/AAAAmentors']] },
+      { title: 'Grade 10 Design unit', tag: ['late', 'Rubric overdue'], points: ['Unit plan review this weekend', 'Rubric to Lina before Monday'],
+        links: [['Unit plan', 'https://docs.google.com/document/d/1AbCdEf/edit']] },
+      { title: 'Robotics Club', points: ['Twelve micro:bits need replacing'], links: [] }
+    ],
+    coming: [
+      { when: 'Tue 13', hl: true, title: 'Director meeting', detail: '10:00 · agenda below', href: CAL + '13' },
+      { when: 'Wed 14', title: 'PD day: AI tools', detail: 'You present at 14:00', href: CAL + '14' },
+      { when: 'Wed 14', title: 'Board meeting', detail: 'Hub numbers go in the pack' },
+      { when: 'Thu 15', title: 'Mid-term break', detail: 'Back on Mon 19' },
+      { when: 'Tue 20', title: 'Grade 9 showcase', detail: 'Robotics lab, 13:00', href: CAL + '20' },
+      { when: 'Wed 21', title: 'Leadership team meeting', detail: '14:00–15:00', href: 'javascript:alert(1)' }
+    ],
+    agenda: { title: 'Tue 13 Oct · Director', open: true, sections: [
+      { name: 'Done', items: [{ t: 'Hub mentors on board', d: 'Eight mentors in the Chat space' }, { t: 'Assessment calendar submitted', d: 'Sent to Omar on Friday' }, { t: 'Workshop photos shared', d: '' }] },
+      { name: 'In progress', items: [{ t: 'Hub launch note', d: '+18 sign-ups since the soft launch' }, { t: 'Grade 10 Design unit plan', d: 'Rubric with Lina by Monday' }, { t: 'Single sign-on for the Hub portal', d: 'Waiting on IT for a date' }] },
+      { name: 'Decisions & questions', items: [{ t: 'Budget for twelve replacement micro:bits?', d: 'Finance needs the code by Thursday' }, { t: '=Shared drive clean-up: still mine?', d: '' }, { t: 'Anything from your side for my list next week?', d: '' }] }
+    ] },
+    llt: { title: 'LLT · Wed 14 Oct, 2–3pm', padlet: 'https://padlet.com/example-school/fill-us-in-demo',
+      working: ['Hub launch and mentor rota', 'Grade 10 Design unit with the team', 'PD session on AI tools'], great: ['Eight mentors signed up in a week'], night: ['Single sign-on date still open'],
+      raise: [{ t: 'One message on AI use in coursework', d: 'Every division should give students the same rule before the break.' }] },
+    quick: [
+      ['Tracker sheet', 'Work, Personal, Inbox', 'https://docs.google.com/spreadsheets/d/1TrackerDemo/edit'],
+      ['Work mail', 'Inbox', 'https://mail.google.com/mail/u/0/#inbox'],
+      ['Calendar', 'This week', 'https://calendar.google.com/calendar/r/week'],
+      ['Hub folder', 'Shared drive', 'https://drive.google.com/drive/folders/1HubDemo'],
+      ['Personal mail', 'Gmail', 'https://mail.google.com/mail/u/1/#inbox'],
+      ['Old intranet', 'Not a web link', 'ftp://intranet.example.com/']
+    ]
+  };
+  // ?desk=minimal: a board with most fields missing or of the wrong type (the page must still render).
+  var deskMinimal = { items: [
+    { id: 'm1', lane: 'nowhere', title: 'An item whose lane is not listed', tags: 'not a list', links: [['Only a label']] },
+    { id: 'm2', title: 'No lane and no why' }, 'not an object', { lane: 'now', title: 'No id, so it cannot be ticked' }
+  ], agenda: null, llt: null, quick: 'not a list' };
+  var AISA_MAIL = 'https://mail.google.com/mail/?authuser=bbaki%40aisa.sch.ae#';
+  function deskExpand(t) {
+    t = String(t || '').trim();
+    if (t.indexOf('wt:') === 0) return AISA_MAIL + 'all/' + t.slice(3);
+    if (t.indexOf('w:') === 0) return AISA_MAIL + 'search/' + encodeURIComponent(t.slice(2)).replace(/%20/g, '+');
+    if (t.indexOf('p:') === 0) return 'https://mail.google.com/mail/?authuser=brandon.abaki@gmail.com#all/thread-f:' + t.slice(2);
+    return t;
+  }
+  function webLink(u) { u = String(u || '').trim(); return /^https?:\/\//i.test(u) ? u : ''; }
+  function deskTags(it) { return Array.isArray(it.tags) ? it.tags.filter(Array.isArray) : []; } // the minimal board has tags that are not a list
+  function deskCategory(it) {
+    if (/^W-/.test(it.task || '')) return 'Work';
+    if (/^P-/.test(it.task || '')) return 'Personal';
+    return deskTags(it).some(function (t) { return t[0] === 'home'; }) ? 'Personal' : 'Work';
+  }
+  // DESK.md section 2: the row with the item's task ID in its tab, else the row whose Source key is desk:<item id> in either tab.
+  function deskRow(it) {
+    var cat = deskCategory(it), row = null;
+    if (it.task) tasks.forEach(function (t) { if (!row && t.id === it.task && t.category === cat) row = t; });
+    if (!row) tasks.forEach(function (t) { if (!row && t.sourceKey === 'desk:' + it.id) row = t; });
+    return row;
+  }
+  var WD = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  function deskDue(it) {
+    var tag = ''; deskTags(it).forEach(function (t) { if (!tag && (t[0] === 'due' || t[0] === 'late')) tag = String(t[1]); });
+    if (/\btoday\b/i.test(tag)) return TODAY;
+    if (/\btomorrow\b/i.test(tag)) return d(1);
+    var m = /\b(sun|mon|tue|wed|thu|fri|sat)[a-z]*\s+(\d{1,2})\b/i.exec(tag);
+    if (!m) return '';
+    for (var k = -14; k <= 30; k++) { var c = d(k); if (+c.slice(8) === +m[2] && WD[weekday(c)] === m[1].toLowerCase()) return c; }
+    return '';
+  }
+  function deskSource(it) {
+    var src = 'Claude';
+    deskTags(it).forEach(function (t) {
+      if (t[0] === '' && t[1] === 'Email') src = 'Gmail';
+      else if (t[0] === '' && (t[1] === 'Chat' || t[1] === 'Calendar')) src = t[1];
+      else if (t[0] === 'list' && t[1] === 'Added by you') src = 'Manual';
+    });
+    return src;
+  }
+  function deskAdded(linked) {
+    return clone(tasks.filter(function (t) { return t.status === 'Open' && t.source === 'Manual' && !linked[t.id]; })
+      .sort(function (a, b) { return a.created < b.created ? 1 : a.created > b.created ? -1 : 0; }).slice(0, 20));
+  }
+  function getDeskImpl() {
+    var mode = mock.deskMode;
+    if (mode === 'empty') return { ok: false, reason: 'empty', message: 'The Desk tab has no rows yet.', deskUrl: DESK_URL, added: deskAdded({}) };
+    if (mode === 'invalid') return { ok: false, reason: 'invalid', message: 'The Desk tab could not be read: items2 is not valid JSON.', deskUrl: DESK_URL, added: deskAdded({}) };
+    var src = clone(mode === 'minimal' ? deskMinimal : desk), linked = {};
+    if (mode === 'stale') { src.built = 'Fri 9 Oct, 6:45am Gulf time'; src.eyebrow = 'Friday 9 October 2026 · school day'; }
+    var items = (Array.isArray(src.items) ? src.items : []).map(function (it) {
+      if (!it || typeof it !== 'object') return it;
+      var row = deskRow(it);
+      it.category = deskCategory(it); it.taskId = row ? row.id : ''; it.status = row ? row.status : ''; it.done = !!row && (row.status === 'Done' || row.status === 'Dropped');
+      if (row) linked[row.id] = 1;
+      return it;
+    });
+    var builtDate = mode === 'stale' ? d(-1) : TODAY;
+    return { ok: true, desk: { built: src.built, eyebrow: src.eyebrow, sources: src.sources, lanes: src.lanes, strip: src.strip, items: items, cleared: src.cleared,
+      priorities: src.priorities, coming: src.coming, agenda: src.agenda, llt: src.llt, quick: src.quick },
+      added: deskAdded(linked), builtAt: builtDate + ' 09:12', builtDate: builtDate, stale: builtDate !== TODAY, deskUrl: DESK_URL };
+  }
+  function setDeskItemDoneImpl(p) {
+    var it = null;
+    if (mock.deskMode !== 'empty' && mock.deskMode !== 'invalid') (mock.deskMode === 'minimal' ? deskMinimal : desk).items.forEach(function (x) { if (x && x.id === p.itemId) it = x; });
+    if (!it) throw new Error('That Desk item is no longer on the Desk');
+    var row = deskRow(it);
+    if (!row) { // create the tracker row first (createTasks semantics), Source key desk:<item id>
+      var due = deskDue(it), late = deskTags(it).some(function (t) { return t[0] === 'late'; });
+      var r = addTaskImpl({ category: deskCategory(it), title: it.title, details: it.why || '', link: webLink(deskExpand(((Array.isArray(it.links) ? it.links : [])[0] || [])[1])),
+        source: deskSource(it), due: due, priority: it.lane === 'now' && (late || due === TODAY) ? 'High' : 'Normal', sourceKey: 'desk:' + it.id });
+      row = findTask(null, r.task.id);
+    }
+    if (p.done) { if (row.status !== 'Done' || !row.done) row.done = TODAY; row.status = 'Done'; row.note = appendNote(row.note, p.note); }
+    else { row.status = 'Open'; row.done = ''; }
+    return { task: touch(row) };
+  }
 
   function findTask(cat, id) { for (var i = 0; i < tasks.length; i++) if (tasks[i].id === id && (!cat || tasks[i].category === cat)) return tasks[i]; throw new Error('Task not found: ' + id); }
   function appendNote(existing, note) {
@@ -256,10 +430,14 @@
       log.unshift({ time: NOW, fn: 'runCaptureNow', level: 'INFO', message: 'gmail 1, chat 0, chatMode ' + window.__mock.chatMode });
       return { gmail: 1, chat: 0, chatMessages: 0, chatMode: window.__mock.chatMode, errors: [] };
     },
-    getLog: function (p) { return { rows: clone(log.slice(0, p.limit || 100)) }; }
+    getLog: function (p) { return { rows: clone(log.slice(0, p.limit || 100)) }; },
+    getDesk: getDeskImpl,
+    setDeskItemDone: setDeskItemDoneImpl
   };
 
-  var mock = { state: { tasks: tasks, inbox: inbox, agendaStore: agendaStore, config: config, today: TODAY }, latency: 40, chatMode: 'api', calls: [], failures: {},
+  var deskParam = /[?&]desk=(empty|invalid|stale|minimal)\b/.exec(location.search);
+  var mock = { state: { tasks: tasks, inbox: inbox, agendaStore: agendaStore, config: config, today: TODAY, desk: desk }, latency: 40, chatMode: 'api', calls: [], failures: {},
+    deskMode: deskParam ? deskParam[1] : 'ok',
     failNext: function (name, message) { mock.failures[name] = message || 'Mock failure'; } };
   window.__mock = mock;
 

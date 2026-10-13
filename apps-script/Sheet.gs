@@ -214,8 +214,10 @@ function padRow_(values, cols) {
 
 /**
  * Fills blanks that other writers (Claude routines) may leave in a task tab: ID, Created,
- * Status, Priority, Updated. Trims whitespace, turns date-like strings into Dates and
- * TRUE/FALSE strings into booleans. Logs what it fixed. Returns {fixed, details}.
+ * Status, Priority, Updated (Work and Personal only: taskTabName() refuses any other tab, so the
+ * Desk, Inbox, Agenda, Config and Log tabs are never touched). Trims whitespace, turns
+ * date-like strings into Dates and TRUE/FALSE strings into booleans. Logs what it fixed.
+ * Returns {fixed, details}.
  *
  * The common case (nothing to fix) is a plain unlocked read. When something needs fixing the
  * tab is re-read and re-scanned under the script lock before writing, so two executions that
@@ -480,6 +482,9 @@ function textColumns_(name) {
     case TABS.AGENDA: return [A.item, A.detail, A.link, A.taskId];
     case TABS.CONFIG: return [COLUMN.CONFIG.value];
     case TABS.LOG: return [COLUMN.LOG.message];
+    // docs/DESK.md 1: column B (JSON) is plain text so a cell is never parsed as a number or a
+    // formula; Built (C) too, so "2026-10-13 06:45" reads back exactly as the routine wrote it.
+    case TABS.DESK: return [COLUMN.DESK.json, COLUMN.DESK.built];
     default: return [];
   }
 }
@@ -545,6 +550,10 @@ function applyTabFormatting_(sheet, name) {
   } else if (name === TABS.LOG) {
     col(COLUMN.LOG.time).setNumberFormat('yyyy-mm-dd hh:mm:ss');
     sheet.setColumnWidth(COLUMN.LOG.message + 1, 600);
+  } else if (name === TABS.DESK) {
+    sheet.setColumnWidth(COLUMN.DESK.key + 1, 110);
+    sheet.setColumnWidth(COLUMN.DESK.json + 1, 600);
+    sheet.setColumnWidth(COLUMN.DESK.built + 1, 140);
   }
 }
 

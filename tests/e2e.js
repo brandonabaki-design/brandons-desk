@@ -6,10 +6,15 @@
  * via page.exposeFunction('__gasCall', …) straight into the entry points of Api.gs (guard(), validation,
  * jsonSafe() and all). The mock sheet is seeded with 17 tasks and 4 inbox items; the scenarios below assert
  * on the DOM and on the sheet state after each flow, at desktop and phone widths and once more with the
- * SheetJS CDN blocked (CSV fallback). Fails (exit 1) on any console error, uncaught page error, unexpected
- * network request, Date/undefined leaking out of a server function, or a failed step.
+ * SheetJS CDN blocked (CSV fallback). A second scenario covers the Desk home page (docs/DESK.md): a fictional
+ * desk-data written into the Desk tab as the routine writes it (meta/strip/items/items2/… rows), then landing,
+ * lanes and counts, ticks of an item with a row, one with only a desk:<id> row and one with no row (created on
+ * tick), unticks, the add box, the agenda copy and download, the stale, invalid and empty states, and the Tasks
+ * tab alongside. Fails (exit 1) on any console error, uncaught page error, unexpected network request,
+ * Date/undefined leaking out of a server function, or a failed step.
  *
  *   node tests/e2e.js            (npm test runs it after the unit tests)
+ *   E2E_ONLY=desk node tests/e2e.js   (only the Desk scenario; E2E_ONLY=tasks for the other one)
  *   CHROMIUM_PATH=... UI_OUT=... node tests/e2e.js
  * Needs a Chromium: `npx playwright install chromium` once after `npm install` (or CHROMIUM_PATH).
  */
@@ -21,6 +26,7 @@ const { createSandbox } = require('./run');
 const { assemble, DEFAULT_OUT_DIR } = require('./ui/assemble');
 const { findUnsafe } = require('./fixtures/helpers');
 const { buildChatFixture } = require('./fixtures/chat-api');
+const { DESK_BUILT, deskData, deskRows } = require('./fixtures/desk-rows');
 
 let playwright;
 try { playwright = require('playwright'); } catch (e) {
@@ -56,7 +62,7 @@ const NOW = '2026-10-10T05:30:00Z';
 const TODAY = '2026-10-10';
 const API = ['getBootstrap', 'listTasks', 'addTask', 'updateTask', 'completeTask', 'reopenTask', 'dropTask', 'moveTask',
   'importText', 'importHtml', 'listInbox', 'promoteInbox', 'ignoreInbox', 'getAgenda', 'saveAgenda', 'regenerateAgenda',
-  'getNewsletter', 'runCaptureNow', 'getLog'];
+  'getNewsletter', 'runCaptureNow', 'getLog', 'getDesk', 'setDeskItemDone'];
 const PAGES = ['today', 'inbox', 'import', 'agenda', 'newsletter', 'history'];
 
 const failures = [];
@@ -776,6 +782,416 @@ async function downloadCheck(page, selector, baseName, xlsxOk, tag, sheetName, c
   return dest;
 }
 
+// ---------------------------------------------------------------------------
+// The Desk home page (docs/DESK.md) against the real getDesk / setDeskItemDone / addTask
+// ---------------------------------------------------------------------------
+
+// Fixed clock: Tuesday 2026-10-13 10:00 in Dubai (06:00Z), the morning of the fixture build (DESK_BUILT 2026-10-13 06:45).
+const DESK_NOW = '2026-10-13T06:00:00Z';
+const DESK_TODAY = '2026-10-13';
+const DESK_STALE_BUILT = '2026-10-12 06:45';
+const AISA_MAIL = 'https://mail.google.com/mail/?authuser=bbaki%40aisa.sch.ae#';
+const PERSONAL_THREAD = 'https://mail.google.com/mail/?authuser=brandon.abaki@gmail.com#all/thread-f:';
+const DESK_DIRECTOR = 'Dr Sam Example';
+
+/**
+ * Writes `rows` ([Key, JSON, Built]) into the Desk tab the way the routine does (DESK.md section 4): clear Desk!A2:C,
+ * then write every row in one call. The rows are written in reverse key order, since row order must not matter.
+ */
+function writeDeskTab(sb, rows) {
+  const sheet = sb.mock.sheet('Desk');
+  const last = sheet.getLastRow();
+  if (last >= 2) sheet.getRange(2, 1, last - 1, 3).clearContent();
+  if (rows.length) sheet.getRange(2, 1, rows.length, 3).setValues(rows.slice().reverse());
+}
+
+/**
+ * Seed for the Desk scenario (all fictional): the fixture desk-data with `items` split into several rows, and tracker
+ * rows that cover the three ways an item meets the tracker: "slides" has a row by its `task` ID (W-fx000001), "receipts"
+ * only a row with Source key desk:receipts, "plumber" and "budget" no row at all (the tick creates it). "dentist"
+ * (P-fx000002) is already Done, so it renders ticked. Two Open Manual tasks are "Added by you"; one Import task is not.
+ */
+function seedDeskSheet(sb) {
+  const gs = sb.gs;
+  const task = (o) => Object.assign({
+    id: '', category: 'Work', created: '2026-10-12', title: '', details: '', source: 'Claude', link: '', status: 'Open', done: '',
+    note: '', project: '', newsletter: false, discuss: false, due: '', priority: 'Normal', sourceKey: '', updated: '2026-10-12T07:00:00+04:00'
+  }, o);
+  sb.mock.seed('Config', [['DIRECTOR_NAME', DESK_DIRECTOR, '']]);
+  const work = [
+    task({ id: 'W-fx000001', title: 'Finish the Year 8 slides', details: 'Before Thursday.', link: 'https://docs.example.org/slides/y8', note: 'Outline done' }),
+    task({ id: 'W-dk000002', title: 'Forward the conference receipts', sourceKey: 'desk:receipts' }),
+    task({ id: 'W-dk000003', title: 'Mark the Year 9 essays', source: 'Import', sourceKey: 'import:0000000000000000000000000000000000000001', created: '2026-10-09' }),
+    task({ id: 'W-dk000004', title: 'Print the club certificates', source: 'Manual', created: '2026-10-12' })
+  ];
+  const personal = [
+    task({ id: 'P-fx000002', category: 'Personal', title: 'Book the dentist', status: 'Done', done: '2026-10-12', updated: '2026-10-12T18:00:00+04:00' }),
+    task({ id: 'P-dk000005', category: 'Personal', title: 'Collect the dry cleaning', source: 'Manual', created: DESK_TODAY, updated: DESK_TODAY + 'T08:00:00+04:00' })
+  ];
+  sb.mock.seed('Work', work.map((t) => gs.taskToRow(t, gs.parseDate(t.updated))));
+  sb.mock.seed('Personal', personal.map((t) => gs.taskToRow(t, gs.parseDate(t.updated))));
+  // 900 characters per JSON cell instead of 45 000, so the nine fixture items need items, items2, items3, …
+  const rows = deskRows(deskData(), DESK_BUILT, { maxChars: 900 });
+  writeDeskTab(sb, rows);
+  gs.resetMemos();
+  return rows;
+}
+
+/** The board as the page shows it: meter, lane counts, open cards per lane, done cards. */
+function deskBoard(page) {
+  return page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('#desk-board .dk-item:not(.pending)'));
+    const lanes = Array.from(document.querySelectorAll('#desk-board .dk-lane')).map((l) => ({ key: l.getAttribute('data-lane'), title: l.querySelector('h2').textContent,
+      count: l.querySelector('.dk-count').textContent, open: l.querySelectorAll('.dk-item:not(.done):not(.pending)').length,
+      keys: Array.from(l.querySelectorAll('.dk-item')).map((c) => c.getAttribute('data-key')) }));
+    const meter = document.getElementById('desk-done');
+    return { meter: meter ? meter.textContent : '', bar: (document.getElementById('desk-bar') || { style: {} }).style.width, total: cards.length,
+      done: cards.filter((c) => c.classList.contains('done')).map((c) => c.getAttribute('data-key')), lanes: lanes };
+  });
+}
+function boardConsistent(b) { return b.meter === b.done.length + ' / ' + b.total && b.lanes.every((l) => l.count === l.open + ' open'); }
+/** Ticks or unticks a Desk card through its checkbox (a click on the 40 px label's input, as a tap does). */
+async function deskTick(page, key) { await page.click('[data-key="' + key + '"] input[data-role="check"]'); }
+async function deskSettled(page) {
+  await page.waitForFunction(() => { const s = document.getElementById('desk-sync'); return !s || !/Saving/.test(s.textContent); }, null, { timeout: 5000 });
+  await page.waitForTimeout(60);
+}
+/** The workbook (or CSV) rows of a download, trailing empty cells dropped. */
+function downloadRows(buf, isXlsx) {
+  let rows;
+  if (isXlsx) {
+    const XLSX = require('xlsx');
+    const wb = XLSX.read(buf, { type: 'buffer' });
+    rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', blankrows: true, raw: false });
+    rows.sheetNames = wb.SheetNames;
+  } else {
+    const text = buf.toString('utf8').replace(/^﻿/, '');
+    rows = text.split(/\r\n/).map((line) => {
+      const out = [];
+      let cur = '', quoted = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quoted) { if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') quoted = false; else cur += ch; }
+        else if (ch === '"') quoted = true;
+        else if (ch === ',') { out.push(cur); cur = ''; } else cur += ch;
+      }
+      out.push(cur);
+      return out;
+    });
+  }
+  const trimmed = rows.map((r) => { const x = r.map((c) => String(c)); while (x.length && x[x.length - 1] === '') x.pop(); return x; });
+  if (rows.sheetNames) trimmed.sheetNames = rows.sheetNames;
+  return trimmed;
+}
+
+async function runDeskScenario(browser, url, vp, xlsxOk) {
+  const tag = 'desk-' + vp.name;
+  const sb = createSandbox({ now: DESK_NOW });
+  const deskRowsWritten = seedDeskSheet(sb);
+  const S = sheetView(sb);
+  const DESK_URL = sb.eval('DESK_URL');
+  const calls = [];
+  const lastCall = (name) => calls.filter((c) => c.name === name).slice(-1)[0] || null;
+  const { context, page, errors, unexpected, unsafe } = await openPage(browser, sb, vp, calls, xlsxOk);
+  try {
+    // ---- the seed really is split the way the routine writes it ----
+    const keys = deskRowsWritten.map((r) => r[0]);
+    check(keys[0] === 'meta' && keys.indexOf('items') > 0 && keys.indexOf('items2') > 0 && keys.indexOf('items3') > 0 && deskRowsWritten.every((r) => r[2] === DESK_BUILT && /^[[{"n]/.test(r[1])),
+      tag + ': the Desk tab holds meta/strip/items/items2/…/quick rows, Built ' + DESK_BUILT + ' ' + JSON.stringify(keys));
+    check(sb.mock.rows('Desk')[0][0] === 'quick', tag + ': rows written in reverse key order (row order must not matter)');
+
+    // ---- landing: no hash opens the Desk ----
+    await page.goto(url);
+    await page.waitForSelector('body[data-ready="1"]', { timeout: 15000 });
+    await page.waitForSelector('#desk-board .dk-item');
+    check(sb.gs.todayDubai() === DESK_TODAY, tag + ': server today is ' + DESK_TODAY + ' (Dubai, fixed clock)');
+    const landing = await page.evaluate(() => ({
+      desk: !document.getElementById('page-desk').hidden, today: !document.getElementById('page-today').hidden,
+      active: Array.from(document.querySelectorAll('#tabs a.active')).map((a) => a.getAttribute('data-page')),
+      labels: Array.from(document.querySelectorAll('#tabs a')).map((a) => a.childNodes[0].textContent.trim())
+    }));
+    check(landing.desk && !landing.today && JSON.stringify(landing.active) === '["desk"]', tag + ': with no hash the Desk is the landing page ' + JSON.stringify(landing));
+    check(JSON.stringify(landing.labels) === JSON.stringify(['Desk', 'Tasks', 'Inbox', 'Import', 'Agenda', 'Newsletter', 'History']), tag + ': tabs: Desk first, Today renamed Tasks ' + JSON.stringify(landing.labels));
+    const gd = lastCall('getDesk');
+    const res = gd && gd.result;
+    check(!!res && res.ok === true && res.builtAt === DESK_BUILT && res.builtDate === DESK_TODAY && res.stale === false && res.deskUrl === DESK_URL,
+      tag + ': getDesk read the Desk tab: ok, builtAt, builtDate, not stale, deskUrl');
+    if (res && res.ok) {
+      check(JSON.stringify(res.desk.items.map((i) => i.id)) === JSON.stringify(deskData().items.map((i) => i.id)),
+        tag + ': items, items2, items3, … joined in numeric key order (rows were written in reverse) ' + JSON.stringify(res.desk.items.map((i) => i.id)));
+      const by = {}; res.desk.items.forEach((i) => { by[i.id] = i; });
+      check(by.slides.taskId === 'W-fx000001' && by.slides.status === 'Open' && by.slides.done === false && by.slides.category === 'Work', tag + ': "slides" matched its row by task ID');
+      check(by.receipts.taskId === 'W-dk000002' && by.receipts.category === 'Work', tag + ': "receipts" matched its row by Source key desk:receipts');
+      check(by.plumber.taskId === '' && by.plumber.category === 'Personal' && by.budget.taskId === '' && by.budget.category === 'Work', tag + ': "plumber" and "budget" have no row yet (Personal by its home tag, Work)');
+      check(by.dentist.taskId === 'P-fx000002' && by.dentist.status === 'Done' && by.dentist.done === true, tag + ': "dentist" row is Done');
+      check(JSON.stringify(res.added.map((t) => t.id)) === JSON.stringify(['P-dk000005', 'W-dk000004']), tag + ': added = the Open Manual tasks, newest Created first ' + JSON.stringify(res.added.map((t) => t.id)));
+      check(res.desk.rebuild === undefined && res.desk.agenda && res.desk.llt && res.desk.lanes.length === 3, tag + ': meta.rebuild is not passed on; agenda and llt present');
+    }
+
+    // ---- lanes, cards and counts ----
+    let b = await deskBoard(page);
+    check(JSON.stringify(b.lanes.map((l) => [l.key, l.title])) === JSON.stringify([['now', 'Do today'], ['reply', 'Reply & follow up'], ['later', 'This week']]), tag + ': three lanes titled from meta.lanes');
+    check(JSON.stringify(b.lanes.map((l) => l.keys)) === JSON.stringify([
+      ['a:P-dk000005', 'a:W-dk000004', 'i:slides', 'i:plumber', 'i:budget', 'i:bakesale'], ['i:parent', 'i:receipts'], ['i:assembly', 'i:repo', 'i:dentist']]),
+      tag + ': cards in their lanes, "Added by you" at the top of the first ' + JSON.stringify(b.lanes.map((l) => l.keys)));
+    check(boardConsistent(b) && b.meter === '1 / 11' && JSON.stringify(b.lanes.map((l) => l.count)) === '["6 open","2 open","2 open"]' && JSON.stringify(b.done) === '["i:dentist"]',
+      tag + ': meter 1 / 11 and lane counts 6 / 2 / 2 open; the Done row renders ticked ' + JSON.stringify([b.meter, b.lanes.map((l) => l.count), b.done]));
+    check(await page.locator('[data-key="i:dentist"] input[data-role="check"]:checked').count() === 1, tag + ': the ticked card\'s checkbox is checked');
+    const cardInfo = await page.evaluate(() => {
+      const card = (k) => document.querySelector('[data-key="' + k + '"]');
+      const links = (k) => Array.from(card(k).querySelectorAll('.dk-lnk')).map((a) => [a.tagName, a.textContent, a.getAttribute('href'), a.getAttribute('target'), a.getAttribute('rel')]);
+      const tags = (k) => Array.from(card(k).querySelectorAll('.dk-tag')).map((t) => [t.className, t.textContent]);
+      return { slides: links('i:slides'), receipts: links('i:receipts'), plumber: links('i:plumber'), repo: links('i:repo'), tagsPlumber: tags('i:plumber'), tagsAdded: tags('a:P-dk000005'),
+        title: card('i:slides').querySelector('.dk-title').textContent, why: card('i:slides').querySelector('.dk-why').textContent,
+        js: document.querySelectorAll('#page-desk a[href^="javascript"], #page-desk a:not([href])').length };
+    });
+    check(JSON.stringify(cardInfo.slides) === JSON.stringify([['A', 'Thread', AISA_MAIL + 'all/18f2a0c3d4e5f601', '_blank', 'noopener'], ['A', 'Slides', 'https://docs.example.org/slides/y8', '_blank', 'noopener']]),
+      tag + ': wt: and https links ' + JSON.stringify(cardInfo.slides));
+    check(cardInfo.receipts[0] && cardInfo.receipts[0][2] === AISA_MAIL + 'search/from%3Aoffice+receipts', tag + ': w: search link');
+    check(cardInfo.plumber[0] && cardInfo.plumber[0][2] === PERSONAL_THREAD + '1790000000000000001', tag + ': p: personal thread link');
+    check(JSON.stringify(cardInfo.repo.map((x) => [x[0], x[1], x[2]])) === JSON.stringify([['SPAN', 'Bad', null], ['A', 'Repo', 'https://git.example.org/club/robots']]) && cardInfo.js === 0,
+      tag + ': a javascript: target is plain text, never a link');
+    check(JSON.stringify(cardInfo.tagsPlumber) === JSON.stringify([['dk-tag dk-tag-home', 'Personal'], ['dk-tag dk-tag-due', 'Today'], ['dk-tag', 'Email']]), tag + ': tag chips keep their kinds ' + JSON.stringify(cardInfo.tagsPlumber));
+    check(JSON.stringify(cardInfo.tagsAdded) === JSON.stringify([['dk-tag dk-tag-list', 'Added by you'], ['dk-tag dk-tag-home', 'Personal']]), tag + ': an added task carries the "Added by you" chip');
+    check(cardInfo.title === 'Finish the Year 8 slides' && cardInfo.why === "Ms Rivera needs them before Thursday's lesson.", tag + ': card title and why from the Desk data');
+    const parts = await page.evaluate(() => ({
+      eyebrow: document.getElementById('desk-eyebrow').textContent, days: document.querySelectorAll('#desk-strip .dk-day').length,
+      cleared: Array.from(document.querySelectorAll('#desk-cleared span')).map((e) => e.textContent), prio: document.querySelectorAll('#desk-priorities article').length,
+      coming: document.querySelectorAll('#desk-coming li').length, llt: !!document.getElementById('desk-llt'), quick: document.querySelectorAll('#desk-quick > *').length,
+      agendaOpen: document.getElementById('desk-agenda').open, foot: document.getElementById('desk-foot').textContent,
+      open: document.getElementById('desk-open') && document.getElementById('desk-open').getAttribute('href'), stale: !!document.getElementById('desk-stale')
+    }));
+    check(parts.eyebrow === 'Tuesday 13 October 2026 · Week 7' && parts.days === 4 && JSON.stringify(parts.cleared) === '["Marked the Year 7 quizzes","Sent the field-trip list"]' &&
+      parts.prio === 2 && parts.coming === 2 && parts.llt && parts.quick === 2, tag + ': eyebrow, strip, cleared, priorities, coming up, LLT and quick links render');
+    check(parts.foot === 'Built Tue 13 Oct, 6:45am Gulf time from school mail, Chat, the calendar and personal mail. Open the Desk page' && parts.open === DESK_URL && !parts.stale,
+      tag + ': footer "Built … from …." with the Desk page link, no stale note ' + JSON.stringify(parts.foot));
+    check(parts.agendaOpen === false, tag + ': the agenda block starts closed (agenda.open is false)');
+    await noOverflow(page, tag);
+    await shot(page, tag + '-home');
+    const workRows0 = S.tasks('Work').length;
+    const personalRows0 = S.tasks('Personal').length;
+
+    // ---- tick an item whose row exists by task ID → that row Done today; the note after the tick → updateTask ----
+    await deskTick(page, 'i:slides');
+    let row = await until(() => { const t = S.find('Work', 'Finish the Year 8 slides'); return t && t.status === 'Done' ? t : null; }, tag + ': ticking "slides" completed W-fx000001');
+    if (row) check(row.id === 'W-fx000001' && row.done === DESK_TODAY && row.note === 'Outline done', tag + ': Done = today (Dubai), the row keeps its note ' + JSON.stringify([row.done, row.note]));
+    check(JSON.stringify(lastCall('setDeskItemDone').payload) === JSON.stringify({ itemId: 'slides', done: true }), tag + ': setDeskItemDone({itemId, done:true})');
+    check(await waitToast(page, 'Done: Finish the Year 8 slides'), tag + ': tick toast');
+    await deskSettled(page);
+    b = await deskBoard(page);
+    check(boardConsistent(b) && b.meter === '2 / 11' && b.done.indexOf('i:slides') >= 0 && b.lanes[0].count === '5 open', tag + ': card ticked, meter 2 / 11, first lane 5 open');
+    check(await page.locator('[data-key="i:slides"] .dk-note input').count() === 1, tag + ': the optional note field opens under the ticked card');
+    await page.fill('[data-key="i:slides"] .dk-note input', 'Shared with the team');
+    await shot(page, tag + '-note');
+    await page.press('[data-key="i:slides"] .dk-note input', 'Enter');
+    row = await until(() => { const t = S.find('Work', 'Finish the Year 8 slides'); return t && t.note === 'Outline done · Shared with the team' ? t : null; }, tag + ': Enter saved the note, joined to the existing one');
+    check(JSON.stringify(lastCall('updateTask').payload) === JSON.stringify({ category: 'Work', id: 'W-fx000001', patch: { note: 'Outline done · Shared with the team' } }), tag + ': the note goes through updateTask patch note');
+    check(await waitToast(page, 'Note saved: Finish the Year 8 slides'), tag + ': note toast');
+    await clearToasts(page);
+
+    // ---- tick an item that only has a desk:<id> row → that row Done, nothing created ----
+    await deskTick(page, 'i:receipts');
+    row = await until(() => { const t = S.find('Work', 'Forward the conference receipts'); return t && t.status === 'Done' ? t : null; }, tag + ': ticking "receipts" completed its desk:receipts row');
+    if (row) check(row.id === 'W-dk000002' && row.done === DESK_TODAY, tag + ': the desk-key row is the one completed');
+    await deskSettled(page);
+    check(S.tasks('Work').length === workRows0 && S.tasks('Personal').length === personalRows0, tag + ': no row created for items that had one');
+    await page.press('[data-key="i:receipts"] .dk-note input', 'Escape');
+    check(await page.locator('[data-key="i:receipts"] .dk-note').count() === 0, tag + ': Escape dismisses the note field');
+    await clearToasts(page);
+
+    // ---- tick an item with no row → the row is created (createTasks semantics) and completed ----
+    await deskTick(page, 'i:plumber');
+    row = await until(() => { const t = S.tasks('Personal').find((x) => x.sourceKey === 'desk:plumber'); return t && t.status === 'Done' ? t : null; }, tag + ': ticking "plumber" created a Personal row and completed it');
+    if (row) {
+      check(/^P-[a-z0-9]{8}$/.test(row.id) && row.title === 'Call the plumber about the leak' && row.details === 'He can come today or on Monday.' && row.source === 'Gmail' &&
+        row.link === PERSONAL_THREAD + '1790000000000000001' && row.created === DESK_TODAY && row.done === DESK_TODAY && row.due === DESK_TODAY && row.priority === 'High' && row.updated.indexOf(DESK_TODAY) === 0,
+        tag + ': created row: P- id, Title, Details = why, Source Gmail (Email tag), Link = p: expanded, Created/Done/Due today, High (now lane, due today) ' +
+        JSON.stringify([row.id, row.source, row.link, row.created, row.done, row.due, row.priority]));
+    }
+    await deskSettled(page);
+    check(S.tasks('Personal').length === personalRows0 + 1, tag + ': exactly one row created');
+    await deskTick(page, 'i:budget');
+    row = await until(() => { const t = S.tasks('Work').find((x) => x.sourceKey === 'desk:budget'); return t && t.status === 'Done' ? t : null; }, tag + ': ticking "budget" created a Work row and completed it');
+    if (row) {
+      check(row.title === 'Send the club budget form' && row.source === 'Claude' && row.link === 'https://forms.example.org/club-budget' && row.due === '2026-10-15' && row.priority === 'Normal' && row.done === DESK_TODAY,
+        tag + ': created Work row: Source Claude (no mail/chat/calendar tag), first link, Due Thu 15 resolved, Normal (due is not today) ' + JSON.stringify([row.source, row.link, row.due, row.priority]));
+    }
+    await deskSettled(page);
+    b = await deskBoard(page);
+    check(boardConsistent(b) && b.meter === '5 / 11', tag + ': meter 5 / 11 after four ticks');
+    await clearToasts(page);
+
+    // ---- untick → reopen (the created row is reused, not duplicated) ----
+    await deskTick(page, 'i:plumber');
+    row = await until(() => { const t = S.tasks('Personal').find((x) => x.sourceKey === 'desk:plumber'); return t && t.status === 'Open' ? t : null; }, tag + ': unticking "plumber" reopened its row');
+    if (row) check(row.done === '', tag + ': Done cleared on reopen');
+    check(JSON.stringify(lastCall('setDeskItemDone').payload) === JSON.stringify({ itemId: 'plumber', done: false }), tag + ': setDeskItemDone({itemId, done:false})');
+    await deskSettled(page);
+    check(S.tasks('Personal').filter((x) => x.sourceKey === 'desk:plumber').length === 1, tag + ': unticking did not create a second row');
+    await deskTick(page, 'i:slides');
+    await until(() => { const t = S.find('Work', 'Finish the Year 8 slides'); return t && t.status === 'Open' && t.done === ''; }, tag + ': unticking "slides" reopened W-fx000001');
+    await deskSettled(page);
+    b = await deskBoard(page);
+    check(boardConsistent(b) && b.meter === '3 / 11' && b.done.indexOf('i:plumber') < 0 && b.done.indexOf('i:slides') < 0, tag + ': unticked cards and meter 3 / 11');
+    await clearToasts(page);
+
+    // ---- the add box: Work by default, then Personal; the new card heads the first lane ----
+    check((await page.getAttribute('#desk-add-category [data-value="Work"]', 'aria-checked')) === 'true', tag + ': the add box defaults to Work');
+    await page.fill('#desk-add-title', 'Return the library books');
+    await page.press('#desk-add-title', 'Enter');
+    check(await waitToast(page, 'Added to Work: Return the library books'), tag + ': add toast');
+    row = await until(() => S.find('Work', 'Return the library books'), tag + ': the add box wrote a Work row');
+    if (row) {
+      check(row.source === 'Manual' && row.status === 'Open' && row.created === DESK_TODAY && row.sourceKey === '', tag + ': Source Manual, Open, Created today, no Source key');
+      check(JSON.stringify(lastCall('addTask').payload) === JSON.stringify({ category: 'Work', title: 'Return the library books' }), tag + ': addTask({category, title})');
+      await page.waitForSelector('[data-key="a:' + row.id + '"]');
+      b = await deskBoard(page);
+      check(b.lanes[0].keys[0] === 'a:' + row.id && (await page.locator('[data-key="a:' + row.id + '"] .dk-tag-list').textContent()) === 'Added by you', tag + ': the new task heads the first lane with "Added by you"');
+      check(boardConsistent(b) && b.meter === '3 / 12', tag + ': the meter counts it (3 / 12)');
+    }
+    await page.click('#desk-add-category [data-value="Personal"]');
+    await page.fill('#desk-add-title', 'Buy stamps for the cards');
+    await page.press('#desk-add-title', 'Enter');
+    row = await until(() => S.find('Personal', 'Buy stamps for the cards'), tag + ': the Personal toggle writes a Personal row');
+    if (row) {
+      await page.waitForSelector('[data-key="a:' + row.id + '"]');
+      check((await page.locator('[data-key="a:' + row.id + '"] .dk-tag-home').textContent()) === 'Personal' && (await deskBoard(page)).lanes[0].keys[0] === 'a:' + row.id, tag + ': the Personal task shows first, with a Personal chip');
+      // tick an added task: completeTask on its row
+      await deskTick(page, 'a:' + row.id);
+      const added = row;
+      await until(() => { const t = S.find('Personal', 'Buy stamps for the cards'); return t && t.status === 'Done' && t.done === DESK_TODAY; }, tag + ': ticking an added task completes it (completeTask)');
+      check(JSON.stringify(lastCall('completeTask').payload) === JSON.stringify({ category: 'Personal', id: added.id }), tag + ': through completeTask');
+      await deskSettled(page);
+      check(await page.locator('[data-key="a:' + added.id + '"].done').count() === 1, tag + ': it stays listed, ticked');
+    }
+    await page.click('#desk-add-category [data-value="Work"]');
+    await clearToasts(page);
+
+    // ---- the director agenda: open, copy as text, Download .xlsx (or the CSV fallback) ----
+    await page.click('#desk-agenda-summary');
+    check(await page.evaluate(() => document.getElementById('desk-agenda').open), tag + ': the agenda opens on tap');
+    await page.click('#desk-agenda-copy');
+    check(await waitToast(page, 'Agenda copied as text'), tag + ': copy toast');
+    const copied = await page.evaluate(() => window.__copied || '');
+    check(copied === 'Tue 20 Oct · Head of School\n\nDONE\n1. Robotics kits ordered (Arrived on Monday)\n\nIN PROGRESS\n1. Reading week plan (Book list shared)\n\n' +
+      'DECISIONS & QUESTIONS\n1. Club budget (Can it move to next term?)\n2. Anything from your side for my list next week?', tag + ': agenda copied in the routine page\'s text format ' + JSON.stringify(copied));
+    await clearToasts(page);
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 8000 }), page.click('#desk-agenda-download')]);
+    const dlName = dl.suggestedFilename();
+    const dest = path.join(DOWNLOADS, tag + '-' + dlName);
+    await dl.saveAs(dest);
+    const buf = fs.readFileSync(dest);
+    const wantRows = [['Tue 20 Oct · Head of School'], ['Director: ' + DESK_DIRECTOR], [], ['Section', 'Item', 'Detail'], ['Done', 'Robotics kits ordered', 'Arrived on Monday'],
+      ['In progress', 'Reading week plan', 'Book list shared'], ['Decisions & questions', 'Club budget', 'Can it move to next term?'], ['Decisions & questions', 'Anything from your side for my list next week?']];
+    if (xlsxOk) {
+      check(dlName === 'desk-agenda-' + DESK_TODAY + '.xlsx' && buf.slice(0, 2).toString() === 'PK', tag + ': Download .xlsx gives ' + dlName + ' (zip)');
+      check(await waitToast(page, 'Downloaded ' + dlName), tag + ': xlsx toast');
+      const got = downloadRows(buf, true);
+      const same = JSON.stringify(got.sheetNames) === '["Agenda"]' && JSON.stringify(got) === JSON.stringify(wantRows);
+      check(same, tag + ': one sheet "Agenda": title, director, blank row, Section / Item / Detail, then every agenda item' + (same ? '' : '\n  got: ' + JSON.stringify([got.sheetNames, got])));
+    } else {
+      check(dlName === 'desk-agenda-' + DESK_TODAY + '.csv' && buf.toString('utf8').indexOf('﻿') === 0, tag + ': without SheetJS the agenda downloads as ' + dlName + ' (UTF-8 BOM)');
+      check(await waitToast(page, 'did not load, so this is a .csv'), tag + ': CSV fallback explained in a toast');
+      const got = downloadRows(buf, false);
+      const same = JSON.stringify(got) === JSON.stringify(wantRows);
+      check(same, tag + ': the CSV holds the same rows' + (same ? '' : '\n  got: ' + JSON.stringify(got)));
+    }
+    await clearToasts(page);
+    await noOverflow(page, tag + ' after ticks');
+    await shot(page, tag + '-ticked');
+
+    // ---- the Tasks tab still works alongside: it shows the Desk's ticks, and its own ticks show on the Desk ----
+    await gotoPage(page, 'today');
+    check(await page.locator('#col-work details.done-group .task', { hasText: 'Forward the conference receipts' }).count() === 1 &&
+      await page.locator('#col-work details.done-group .task', { hasText: 'Send the club budget form' }).count() === 1,
+      tag + ': rows ticked on the Desk are under Done today on the Tasks page (incl. the one the tick created)');
+    check(await page.locator('#col-work .group.open .task', { hasText: 'Finish the Year 8 slides' }).count() === 1 &&
+      await page.locator('#col-personal .task', { hasText: 'Call the plumber about the leak' }).locator('.task-check:not(:checked)').count() === 1,
+      tag + ': unticked rows are open on the Tasks page');
+    const openNow = S.tasks('Work').concat(S.tasks('Personal')).filter((t) => t.status === 'Open').length;
+    check(await tabCount(page, 'today') === String(openNow), tag + ': the Tasks tab count matches the open rows (' + openNow + ')');
+    await page.fill('#qa-title', 'Water the classroom plants');
+    await page.press('#qa-title', 'Enter');
+    check(await waitToast(page, 'Added to Work: Water the classroom plants'), tag + ': quick-add on the Tasks page still works');
+    row = await until(() => S.find('Work', 'Water the classroom plants'), tag + ': and writes its row');
+    const certs = page.locator('.task', { hasText: 'Print the club certificates' });
+    await certs.locator('.task-check').click();
+    await certs.locator('.note-box button', { hasText: 'Done, no note' }).click();
+    await until(() => { const t = S.find('Work', 'Print the club certificates'); return t && t.status === 'Done'; }, tag + ': ticking on the Tasks page completes the row');
+    await clearToasts(page);
+    await gotoPage(page, 'desk');
+    check(await page.locator('[data-key="a:W-dk000004"].done').count() === 1, tag + ': a task ticked on the Tasks page shows ticked on the Desk');
+    check(row && await page.locator('[data-key="a:' + row.id + '"]').count() === 1, tag + ': a task added on the Tasks page shows under "Added by you" on the Desk');
+    b = await deskBoard(page);
+    check(boardConsistent(b), tag + ': meter and lane counts agree after the Tasks page changes ' + JSON.stringify([b.meter, b.lanes.map((l) => l.count)]));
+
+    // ---- reload: ticks come back from the sheet (by task ID, desk:<id>, and the created rows) ----
+    await page.goto(url + '?reload=1');
+    await page.waitForSelector('body[data-ready="1"]');
+    await page.waitForSelector('#desk-board .dk-item');
+    b = await deskBoard(page);
+    check(['i:receipts', 'i:budget', 'i:dentist'].every((k) => b.done.indexOf(k) >= 0) && ['i:slides', 'i:plumber'].every((k) => b.done.indexOf(k) < 0) && boardConsistent(b),
+      tag + ': after a reload the ticks come from the sheet ' + JSON.stringify(b.done));
+    const res2 = lastCall('getDesk').result;
+    const by2 = {}; res2.desk.items.forEach((i) => { by2[i.id] = i; });
+    check(by2.plumber.taskId && by2.plumber.status === 'Open' && by2.budget.status === 'Done' && res2.added.every((t) => t.status === 'Open' && t.source === 'Manual'),
+      tag + ': getDesk now links "plumber" and "budget" to the rows their ticks created');
+
+    // ---- stale: the build is from yesterday ----
+    writeDeskTab(sb, deskRows(deskData(), DESK_STALE_BUILT, { maxChars: 900 }));
+    await page.goto(url + '?stale=1');
+    await page.waitForSelector('body[data-ready="1"]');
+    await page.waitForSelector('#desk-stale');
+    const stale = await page.evaluate(() => ({ text: document.getElementById('desk-stale').textContent, href: document.querySelector('#desk-stale a').getAttribute('href'),
+      visible: document.getElementById('desk-stale').getBoundingClientRect().height > 0 }));
+    check(stale.text === 'This Desk is from Monday 12 Oct; the next build is at 6:45 on school days. Open the Desk page' && stale.href === DESK_URL && stale.visible,
+      tag + ': stale note with the Desk page link ' + JSON.stringify(stale));
+    check(lastCall('getDesk').result.stale === true && lastCall('getDesk').result.builtDate === '2026-10-12', tag + ': getDesk says stale, builtDate 2026-10-12');
+    await noOverflow(page, tag + ' stale');
+    await shot(page, tag + '-stale');
+
+    // ---- invalid: a JSON cell that does not parse ----
+    const bad = deskRows(deskData(), DESK_BUILT, { maxChars: 900 }).map((r) => (r[0] === 'items2' ? [r[0], '[{"id":"broken"', r[2]] : r));
+    writeDeskTab(sb, bad);
+    await page.goto(url + '?invalid=1');
+    await page.waitForSelector('body[data-ready="1"]');
+    await page.waitForSelector('#desk-empty');
+    const inv = await page.evaluate(() => ({ text: document.getElementById('desk-empty').textContent, href: (document.querySelector('#desk-empty #desk-open') || {}).href, add: !!document.getElementById('desk-add-title') }));
+    check(/the "items2" row is not valid JSON/.test(inv.text) && inv.href === DESK_URL && inv.add, tag + ': invalid data: the message names the key, with the Desk page link and the add box ' + JSON.stringify(inv.text));
+    check(sb.mock.logRows().some((r) => r.level === 'ERROR' && /items2/.test(r.message)), tag + ': the bad cell is logged as an ERROR');
+
+    // ---- empty: the routine has not written the tab yet ----
+    writeDeskTab(sb, []);
+    await page.goto(url + '?empty=1');
+    await page.waitForSelector('body[data-ready="1"]');
+    await page.waitForSelector('#desk-empty');
+    const empty = await page.evaluate(() => ({ text: document.querySelector('#desk-empty p').textContent, href: (document.querySelector('#desk-empty #desk-open') || {}).href,
+      lanes: document.querySelectorAll('#desk-board .dk-lane').length, added: Array.from(document.querySelectorAll('#desk-board .dk-item')).map((c) => c.getAttribute('data-key')) }));
+    check(empty.text === 'Your Desk appears here after the next morning build (6:45 on school days), or press Rebuild now on the Desk page.' && empty.href === DESK_URL,
+      tag + ': empty state: the calm panel and the Desk page link');
+    check(lastCall('getDesk').result.ok === false && lastCall('getDesk').result.reason === 'empty', tag + ': getDesk answered reason "empty"');
+    check(empty.lanes === 1 && empty.added.length >= 1 && empty.added.every((k) => k.indexOf('a:') === 0), tag + ': one lane with the "Added by you" tasks ' + JSON.stringify(empty.added));
+    await page.fill('#desk-add-title', 'Order more whiteboard pens');
+    await page.press('#desk-add-title', 'Enter');
+    row = await until(() => S.find('Work', 'Order more whiteboard pens'), tag + ': the add box still works on an empty Desk');
+    if (row) await page.waitForSelector('[data-key="a:' + row.id + '"]');
+    await noOverflow(page, tag + ' empty');
+    await shot(page, tag + '-empty');
+  } catch (e) {
+    fail(tag + ': step threw: ' + (e.stack || e));
+    try { await shot(page, tag + '-FAILED'); } catch (e2) { /* ignore */ }
+  } finally {
+    const allowed = (t) => !xlsxOk && /Failed to load resource/.test(t) && /xlsx\.full\.min\.js/.test(t);
+    const bad = errors.filter((t) => !allowed(t));
+    check(bad.length === 0, tag + ': no console errors or uncaught exceptions' + (bad.length ? '\n  ' + bad.join('\n  ') : ''));
+    check(unexpected.length === 0, tag + ': no unexpected network requests' + (unexpected.length ? ' ' + unexpected.join(', ') : ''));
+    check(unsafe.length === 0, tag + ': no Date/undefined/function left a server function' + (unsafe.length ? '\n  ' + unsafe.join('\n  ') : ''));
+    const errCalls = calls.filter((c) => c.error);
+    check(errCalls.length === 0, tag + ': no server call failed' + (errCalls.length ? '\n  ' + errCalls.map((c) => c.name + ': ' + c.error).join('\n  ') : ''));
+    await context.close();
+  }
+}
+
 async function main() {
   const file = assemble({});
   const url = 'file://' + file;
@@ -784,11 +1200,21 @@ async function main() {
   fs.mkdirSync(SHOTS, { recursive: true });
   fs.mkdirSync(DOWNLOADS, { recursive: true });
   const browser = await launchBrowser();
+  // E2E_ONLY=desk or E2E_ONLY=tasks runs one scenario family (handy while working on it); npm test runs both.
+  const only = process.env.E2E_ONLY || '';
   try {
-    await runScenario(browser, url, { name: 'desktop', width: 1280, height: 900 }, xlsxOk);
-    await runScenario(browser, url, { name: 'mobile', width: 390, height: 844 }, xlsxOk);
-    // SheetJS blocked on purpose: the Agenda/Newsletter downloads must fall back to CSV and say so (SPEC 8).
-    await runScenario(browser, url, { name: 'desktop-noxlsx', width: 1280, height: 900 }, false);
+    if (only !== 'desk') {
+      await runScenario(browser, url, { name: 'desktop', width: 1280, height: 900 }, xlsxOk);
+      await runScenario(browser, url, { name: 'mobile', width: 390, height: 844 }, xlsxOk);
+      // SheetJS blocked on purpose: the Agenda/Newsletter downloads must fall back to CSV and say so (SPEC 8).
+      await runScenario(browser, url, { name: 'desktop-noxlsx', width: 1280, height: 900 }, false);
+    }
+    if (only !== 'tasks') {
+      // The Desk home page against the real getDesk / setDeskItemDone (docs/DESK.md).
+      await runDeskScenario(browser, url, { name: 'desktop', width: 1280, height: 900 }, xlsxOk);
+      await runDeskScenario(browser, url, { name: 'mobile', width: 390, height: 844 }, xlsxOk);
+      await runDeskScenario(browser, url, { name: 'desktop-noxlsx', width: 1280, height: 900 }, false);
+    }
   } finally {
     await browser.close();
   }

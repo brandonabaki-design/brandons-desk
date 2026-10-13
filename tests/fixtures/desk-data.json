@@ -1,0 +1,78 @@
+{
+  "built": "Tue 13 Oct, 6:45am Gulf time",
+  "eyebrow": "Tuesday 13 October 2026 · Week 7",
+  "sources": "school mail, Chat, the calendar and personal mail",
+  "lanes": [
+    { "key": "now", "title": "Do today" },
+    { "key": "reply", "title": "Reply & follow up" },
+    { "key": "later", "title": "This week" }
+  ],
+  "rebuild": { "trigger": "trig_fixture_only" },
+  "strip": [
+    { "cls": "now", "d": "Tue 13", "t": "Team meeting 10:00", "s": "Room 12 · cover check", "href": "https://calendar.example.org/day/2026-10-13" },
+    { "cls": "", "d": "Wed 14", "t": "Assembly", "s": "", "href": "https://calendar.example.org/day/2026-10-14" },
+    { "cls": "pd", "d": "Thu 15", "t": "PD day", "s": "Workshops all day", "href": "https://calendar.example.org/day/2026-10-15" },
+    { "cls": "brk", "d": "Fri 16", "t": "Holiday", "s": "School closed", "href": "" }
+  ],
+  "items": [
+    { "id": "slides", "lane": "now", "title": "Finish the Year 8 slides", "why": "Ms Rivera needs them before Thursday's lesson.",
+      "tags": [["late", "Since Mon 12"], ["", "Email"]],
+      "links": [["Thread", "wt:18f2a0c3d4e5f601"], ["Slides", "https://docs.example.org/slides/y8"]], "task": "W-fx000001" },
+    { "id": "plumber", "lane": "now", "title": "Call the plumber about the leak", "why": "He can come today or on Monday.",
+      "tags": [["home", "Personal"], ["due", "Today"], ["", "Email"]],
+      "links": [["Email", "p:1790000000000000001"]] },
+    { "id": "budget", "lane": "now", "title": "Send the club budget form", "why": "Finance closes the form on Thursday.",
+      "tags": [["due", "By Thu 15"], ["", "Docs"]],
+      "links": [["Form", "https://forms.example.org/club-budget"]] },
+    { "id": "bakesale", "lane": "now", "title": "Book a table for the bake sale", "why": "",
+      "tags": [["list", "Added by you"]], "links": [] },
+    { "id": "parent", "lane": "reply", "title": "Reply to Mr Okafor about the trip", "why": "He asked whether the coach leaves at 8.",
+      "tags": [["new", "New"], ["", "Chat"]],
+      "links": [["Chat", "https://chat.example.org/dm/space-1"]] },
+    { "id": "receipts", "lane": "reply", "title": "Forward the conference receipts", "why": "The office asked for them by Friday.",
+      "tags": [["due", "Fri 16"], ["", "Email"]],
+      "links": [["Search", "w:from:office receipts"]] },
+    { "id": "assembly", "lane": "later", "title": "Prepare the assembly slides", "why": "Five minutes on online safety.",
+      "tags": [["due", "Wed 14"], ["", "Calendar"]],
+      "links": [["Event", "https://calendar.example.org/event/assembly"]] },
+    { "id": "repo", "lane": "later", "title": "Accept the coding club repo invite", "why": "",
+      "tags": [["gh", "GitHub"]],
+      "links": [["Bad", "javascript:alert(1)"], ["Repo", "https://git.example.org/club/robots"]] },
+    { "id": "dentist", "lane": "later", "title": "Book the dentist", "why": "The check-up is overdue.",
+      "tags": [["home", "Personal"], ["late", "Overdue"]], "links": [], "task": "P-fx000002" }
+  ],
+  "cleared": ["Marked the Year 7 quizzes", "Sent the field-trip list"],
+  "priorities": [
+    { "title": "Robotics club", "tag": ["new", "New"], "points": ["Kits arrived", "Draft the term plan"],
+      "links": [["Plan", "https://docs.example.org/robotics-plan"]] },
+    { "title": "Reading week", "points": ["Book list shared"], "links": [] }
+  ],
+  "coming": [
+    { "when": "Mon 19", "hl": true, "title": "Parents' evening", "detail": "16:00–19:00, hall", "href": "https://calendar.example.org/event/parents" },
+    { "when": "Thu 22", "title": "Science fair", "detail": "Judging at 9" }
+  ],
+  "agenda": {
+    "title": "Tue 20 Oct · Head of School",
+    "open": false,
+    "sections": [
+      { "name": "Done", "items": [{ "t": "Robotics kits ordered", "d": "Arrived on Monday" }] },
+      { "name": "In progress", "items": [{ "t": "Reading week plan", "d": "Book list shared" }] },
+      { "name": "Decisions & questions", "items": [
+        { "t": "Club budget", "d": "Can it move to next term?" },
+        { "t": "Anything from your side for my list next week?", "d": "" }
+      ] }
+    ]
+  },
+  "llt": {
+    "title": "Team · Wed 14 Oct, 2–3pm",
+    "padlet": "https://padlet.example.org/team-board",
+    "working": ["Robotics club kits", "Reading week"],
+    "great": ["Year 8 projects"],
+    "night": ["Cover for the PD day"],
+    "raise": [{ "t": "PD day cover", "d": "Every division needs the same plan." }]
+  },
+  "quick": [
+    ["Timetable", "This term", "https://docs.example.org/timetable"],
+    ["Club drive", "Shared folder", "https://drive.example.org/club"]
+  ]
+}

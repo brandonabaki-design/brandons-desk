@@ -235,3 +235,25 @@ function getLog(input) {
     return { rows: rows };
   });
 }
+
+// ---------------------------------------------------------------------------
+// Desk page entry points (docs/DESK.md section 2; implementations in Desk.gs)
+// ---------------------------------------------------------------------------
+
+function getDesk(input) {
+  return apiCall_('getDesk', input, () => {
+    healSheet(TABS.WORK);
+    healSheet(TABS.PERSONAL);
+    return getDesk_();
+  });
+}
+
+function setDeskItemDone(input) {
+  return apiCall_('setDeskItemDone', input, (inp) => {
+    // Rows the routine appended with a blank ID get one first, so a tick resolves to them
+    // instead of creating a second row.
+    healSheet(TABS.WORK);
+    healSheet(TABS.PERSONAL);
+    return setDeskItemDone_(inp);
+  });
+}

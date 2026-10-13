@@ -40,15 +40,13 @@ Three writers share the Agenda tab, so every row's Generated cell (column H) rec
 
 ## Setting up the weekly review
 
-The morning build already exists. The weekly review is created once in the claude.ai **Routines** page (a routine created from a Claude Code session cannot carry connectors on this account):
+The morning build already exists. The weekly review is created once from a claude.ai chat, the same way the morning build was (a routine created from a Claude Code session cannot carry connectors on this account). Paste this into the chat, followed by the full text of `docs/routine-agenda-prompt.md` between two lines of dashes:
 
-1. Routines → New routine. Name: **Weekly agenda review**.
-2. Schedule: Mondays at 14:45, time zone Asia/Dubai.
-3. Connectors: **Google Calendar** and **Google Sheets** (both the work account, `bbaki@aisa.sch.ae`). The prompt also reads AISA mail, Chat and Google Docs with the Claude in Chrome tools on Brandon's computer; when that is not reachable it works from the sheet and the calendar and says so in its Log row.
-4. Prompt: the contents of `docs/routine-agenda-prompt.md`, exactly.
-5. Notifications: off (the review sends no push notification; its result is the agenda in the web app and one Log row).
+> Please create a new routine (scheduled task) for me, set up the same way as my existing routine "Brandon's Desk morning build" (ID trig_01VjWbjbnY1YSpjagSffkSNQ): the same connectors, the same environment and computer so it can use Claude in Chrome, and the same model. Name: Andy agenda: weekly review. Schedule: Mondays at 2:45pm Gulf time (cron: CRON_TZ=Asia/Dubai 45 14 * * 1). Each run starts a fresh session. Prompt: everything between the two lines of dashes below, word for word.
 
-It can also be started by hand from the Routines page (for example after a missed meeting or a late change): a run started by hand always writes, replacing its own earlier lines and keeping Brandon's.
+It needs Google Sheets and Google Calendar; it reads AISA mail, Chat and Google Docs with the Claude in Chrome tools on Brandon's computer, and when that is not reachable it works from the sheet and the calendar and says so in its Log row. Keep the routine's prompt and `docs/routine-agenda-prompt.md` in step.
+
+It can also be started by hand (for example after a missed meeting or a late change): a run started by hand always writes, replacing its own earlier lines and keeping Brandon's.
 
 ## Earlier plan (not used)
 

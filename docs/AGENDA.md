@@ -48,7 +48,7 @@ Every Agenda row's Generated cell says who wrote the line:
 
 ### Desk page (`App.html`, `docs/DESK.md`)
 
-- The `agenda` object in `desk-data` gains `"meeting": "yyyy-MM-dd"` (the meeting's date); both routines write it. `normaliseDesk` keeps it when it is a valid date, else `''`.
+- The `agenda` object in `desk-data` gains `"meeting": "yyyy-MM-dd"` (the meeting's date); the morning build writes it, whether it wrote the agenda itself or filled it from a settled one (the weekly review does not write the Desk tab, see below). `normaliseDesk` keeps it when it is a valid date, else `''`.
 - When the Desk's agenda has a `meeting`, the Desk loads that meeting's saved agenda (`getAgenda({meetingDate: meeting})`) after the Desk itself loads, and again each time the Desk page is opened. When the answer is `saved: true`, the agenda block shows those rows instead of the Desk JSON's sections: Done, In progress, "Decisions & questions" (from Questions) and Documents (each a link pill to its URL when it has one); Notes are not shown on the Desk. **Copy agenda as text** and **Download .xlsx** then use `agendaToText` / `buildAgendaWorkbookRows` on that saved agenda (with documents, links and Notes, the same file as the Agenda page). Otherwise (no `meeting`, not saved, or the call fails) the block and its buttons use the Desk JSON as today. The block's title and open state always come from the Desk JSON. A link **Full agenda** next to the buttons opens the Agenda page at that meeting date.
 - Nothing else on the Desk changes. The weekly review does not write the Desk tab.
 

@@ -93,6 +93,7 @@ function run() {
   const text = p.agendaToText(agenda, { directorName: 'Dr X' });
   assert.ok(text.indexOf('DONE\n1. Did a thing — Hub · note https://x.test/1') >= 0, text);
   assert.ok(text.indexOf('javascript:') < 0);
+  agendaChecks(p, agenda);
   const nl = p.buildNewsletterWorkbookRows([{ id: 'W-1', project: 'Hub', title: 'T', note: 'N', status: 'Done', done: '2026-10-01', link: 'https://x.test/2' }], { from: '2026-09-12', to: today });
   assert.equal(nl.sheetName, 'Newsletter');
   eq(nl.rows[2], ['Project', 'Item', 'Note', 'Status', 'Done', 'Link']);
@@ -158,6 +159,52 @@ function run() {
   console.log('pure-check: ok (' + Object.keys(p).filter((k) => typeof p[k] === 'function').length + ' helpers)');
 }
 
+/* The Agenda page helpers of docs/AGENDA.md section 2: generated kept and sent back, the stamp, the conflict error, and the
+   "Window: …" line only for an unsaved draft. */
+function agendaChecks(p, draft) {
+  // the window line: a draft has it, a saved agenda (which may cover two weeks) does not
+  assert.equal(p.agendaShowsWindow(draft), true);
+  const saved = Object.assign({}, draft, { saved: true });
+  assert.equal(p.agendaShowsWindow(saved), false);
+  assert.equal(p.agendaShowsWindow({ saved: false }), false);
+  assert.equal(p.agendaShowsWindow(null), false);
+  const wbSaved = p.buildAgendaWorkbookRows(saved, { directorName: 'Dr X' });
+  eq(wbSaved.rows.slice(0, 4), [['Director meeting agenda — Tuesday 13 October 2026'], ['Director: Dr X'], [], ['Section', 'Item', 'Detail', 'Link']]);
+  eq(wbSaved.links, [{ r: 4, c: 3, url: 'https://x.test/1' }]);
+  assert.equal(wbSaved.fileName, 'agenda-2026-10-13');
+  const textSaved = p.agendaToText(saved, {});
+  assert.ok(textSaved.indexOf('Window') < 0 && textSaved.indexOf('Director meeting agenda — Tuesday 13 October 2026\n\nDONE\n') === 0, textSaved);
+  // normaliseAgenda: generated and the stamp kept, wrong types tolerated
+  const n = p.normaliseAgenda({ meetingDate: '2026-10-20', weekOf: '2026-10-19', window: { from: '2026-10-13', to: '2026-10-19' }, saved: true, stamp: '0123456789abcdef',
+    sections: { Done: [{ order: 2, item: 'A', detail: 'd', link: 'https://x.test/a', taskId: 'W-1', generated: '2026-10-19 06:45 claude-desk' }, 'bad', null, { item: 7 }],
+      Questions: 'not a list', Extra: [{ item: 'ignored' }] } });
+  eq(Object.keys(n.sections), ['Done', 'In progress', 'Questions', 'Documents', 'Notes']);
+  eq(n.sections.Done, [{ order: 2, item: 'A', detail: 'd', link: 'https://x.test/a', taskId: 'W-1', generated: '2026-10-19 06:45 claude-desk' },
+    { order: 0, item: '7', detail: '', link: '', taskId: '', generated: '' }]);
+  eq([n.sections.Questions, n.saved, n.stamp, n.meetingDate, n.window], [[], true, '0123456789abcdef', '2026-10-20', { from: '2026-10-13', to: '2026-10-19' }]);
+  const n2 = p.normaliseAgenda({ saved: 'yes', stamp: 42, window: 'x' });
+  eq([n2.saved, n2.stamp, n2.window, n2.meetingDate], [false, '', null, '']);
+  eq(p.normaliseAgenda(null).sections.Notes, []);
+  // agendaSectionsForSave: rows without an Item dropped (a bare link names a document; in the other sections a cleared row with
+  // a task link is dropped, not saved as its URL), renumbered, generated sent as loaded
+  const out = p.agendaSectionsForSave({
+    Done: [{ item: '  Kept  as  is ', detail: ' d ', link: 'https://x.test/1', taskId: 'W-1', generated: '2026-10-19 06:45 claude-desk' }, { item: '   ', generated: 'web-draft' },
+      { item: '  ', link: 'https://x.test/y', generated: '2026-10-19 06:45 claude-desk' }, { item: 'Edited', generated: '' }],
+    'In progress': [{ item: '', detail: 'only a detail', link: 'https://mail.google.com/mail/u/0/#all/18f3', taskId: 'W-2', generated: '' }],
+    Questions: [{ item: 'Draft question', generated: 'web-draft' }, { item: 'Odd', generated: 42 }, { item: ' ', link: 'https://x.test/q' }],
+    Documents: [{ item: '', link: 'https://docs.example/d', generated: '' }, { item: 'No link', link: 'javascript:alert(1)' }]
+  });
+  eq(out.Done, [{ order: 1, item: 'Kept as is', detail: 'd', link: 'https://x.test/1', taskId: 'W-1', generated: '2026-10-19 06:45 claude-desk' },
+    { order: 2, item: 'Edited', detail: '', link: '', taskId: '', generated: '' }]);
+  eq(out.Questions.map((r) => [r.order, r.item, r.generated]), [[1, 'Draft question', 'web-draft'], [2, 'Odd', '']]);
+  eq(out.Documents.map((r) => [r.item, r.link]), [['https://docs.example/d', 'https://docs.example/d'], ['No link', '']]);
+  eq([out['In progress'], out.Notes], [[], []]);
+  // the conflict error from saveAgenda (Agenda.gs AGENDA_CONFLICT_MESSAGE), also through the ScriptError prefix
+  assert.equal(p.isAgendaConflict("This agenda changed since you opened it (Claude's weekly review or another tab saved it). Copy any edits you want to keep, then reload the agenda."), true);
+  assert.equal(p.isAgendaConflict('Sheet is locked, try again'), false);
+  assert.equal(p.isAgendaConflict(null), false);
+}
+
 /* The Desk helpers (docs/DESK.md). Fixture text is fictional. */
 function deskChecks(p) {
   const AW = 'https://mail.google.com/mail/?authuser=bbaki%40aisa.sch.ae#';
@@ -213,7 +260,25 @@ function deskChecks(p) {
   eq(n.cleared, ['Sent it', '3']);
   eq(n.priorities, [{ title: 'Hub', tag: ['due', 'Tue 13'], points: ['a'], links: [['Plan', 'https://x.example']] }, { title: 'Club', tag: null, points: [], links: [] }]);
   eq(n.coming.map((c) => [c.title, c.hl, c.href]), [['Meet', false, 'javascript:alert(1)'], ['PD', true, '']]);
-  eq(n.agenda, { title: 'Director agenda', open: false, sections: [{ name: 'Done', items: [{ t: 'X', d: 'Y' }] }] });
+  eq(n.agenda, { title: 'Director agenda', open: false, meeting: '', sections: [{ name: 'Done', items: [{ t: 'X', d: 'Y' }] }] });
+  // agenda.meeting (docs/AGENDA.md section 2): kept when it is a real yyyy-MM-dd date, else ''
+  const meeting = (m) => p.normaliseDesk({ agenda: { title: 'T', meeting: m, sections: [] } }).agenda.meeting;
+  assert.equal(meeting('2026-10-20'), '2026-10-20');
+  assert.equal(meeting(' 2026-10-20 '), '2026-10-20');
+  ['2026-02-30', '2026-13-01', '20 Oct', '2026-10-20T10:00', '2026-1-20', 20261020, null, undefined, {}, ['2026-10-20']].forEach((bad) => assert.equal(meeting(bad), '', JSON.stringify(bad)));
+  // the Desk's agenda block from a saved agenda: Done, In progress, Decisions & questions, Documents (with links) when any; no Notes
+  const savedAgenda = p.normaliseAgenda({ meetingDate: '2026-10-20', saved: true, stamp: 'ab', sections: {
+    Done: [{ item: ' Kits  ordered ', detail: 'Arrived', link: 'https://x.test/k' }], 'In progress': [], Questions: [{ item: 'Budget?', detail: '' }],
+    Documents: [{ item: 'Unit plan', detail: 'For the rubric', link: 'https://docs.example/plan' }, { item: 'Bad link', link: 'javascript:alert(1)' }],
+    Notes: [{ item: 'Private note' }] } });
+  eq(p.deskSavedAgendaSections(savedAgenda), [
+    { name: 'Done', items: [{ t: 'Kits ordered', d: 'Arrived', link: 'https://x.test/k' }] },
+    { name: 'In progress', items: [] },
+    { name: 'Decisions & questions', items: [{ t: 'Budget?', d: '', link: '' }] },
+    { name: 'Documents', items: [{ t: 'Unit plan', d: 'For the rubric', link: 'https://docs.example/plan' }, { t: 'Bad link', d: '', link: '' }], docs: true }]);
+  savedAgenda.sections.Documents = [];
+  eq(p.deskSavedAgendaSections(savedAgenda).map((s) => s.name), ['Done', 'In progress', 'Decisions & questions'], 'no Documents section when there are none');
+  eq(p.deskSavedAgendaSections(null).map((s) => s.items.length), [0, 0, 0]);
   eq(n.llt, { title: 'LLT', padlet: 'https://padlet.example/x', working: ['a'], great: [], night: [], raise: [{ t: 'R', d: 'D' }] });
   eq(n.quick, [['Sheet', 'Tracker', 'https://docs.example/s'], ['Only title', '', '']]);
   // lanes and counts: an item in an unknown lane counts (and shows) in the first lane; added tasks count in the first lane

@@ -456,6 +456,13 @@ a.dk-lnk::after { content: "↗"; margin-left: .28em; font-weight: 500; flex: no
 .dk-ag li b { display: block; font-size: 14px; }
 .dk-ag li span { font-size: 13px; color: var(--dk-muted); }
 .dk-ag-foot { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; font-size: 12.5px; color: var(--dk-muted); }
+/* A saved agenda with Documents has four columns: two by two between the phone and the full desktop frame. */
+@media (min-width: 901px) and (max-width: 1180px) { .dk-ag.dk-ag-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1181px) { .dk-ag.dk-ag-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+/* Documents: a link pill per document (its 40 px hit area comes from .dk-lnk), the detail under it. */
+.dk-ag-doc { margin-bottom: 2px; max-width: 100%; }
+.dk-ag li .dk-lnk-t { font-size: inherit; color: inherit; }
+.dk-ag-foot .dk-open { font-size: 13px; font-weight: 700; margin-left: 4px; }
 
 /* LLT padlet */
 .dk-llt-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 22px; }

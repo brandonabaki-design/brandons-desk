@@ -3,7 +3,9 @@
  * fixtures that mirror SPEC.md section 5. Injected by tests/ui/render.js before the page scripts run,
  * or inlined by `node tests/ui/assemble.js --mock` for a manual look in a browser.
  *
- * Test hooks on window.__mock: state (fixtures), latency (ms), failNext(fn, message), calls (log), deskMode.
+ * Test hooks on window.__mock: state (fixtures), latency (ms), failNext(fn, message), calls (log), deskMode, agendaStamp(weekOf).
+ * The agenda (getAgenda / saveAgenda / regenerateAgenda) follows docs/AGENDA.md section 2: rows carry `generated`, every answer a
+ * `stamp` of the week, and saveAgenda refuses a stale stamp; editing window.__mock.state.agendaStore stands in for a Claude routine.
  * The Desk (getDesk / setDeskItemDone, docs/DESK.md) is a fictional board; ?desk=empty|invalid|stale|minimal in the
  * page URL (or window.__mock.deskMode) switches what getDesk answers.
  */
@@ -101,21 +103,21 @@
   function weekOf(meeting) { var s = meeting; while (weekday(s) !== 1) s = addDays(s, -1); return s; }
   var agendaStore = {}; // weekOf -> sections
   (function seedAgenda() {
-    var m = nextMeeting(TODAY);
+    var m = nextMeeting(TODAY), REVIEW = '2026-10-05 14:46 claude-review', MINE = '2026-10-06 18:02:11';
     agendaStore[weekOf(m)] = {
-      'Done': [{ order: 1, item: 'Set up Chat space for Hub mentors', detail: 'AI Learning Hub · Eight mentors joined', link: 'https://chat.google.com/room/AAAAmentors', taskId: 'W-fx11abcd' },
-        { order: 2, item: 'Finish MYP unit reflections', detail: 'Grade 10 Design', link: '', taskId: 'W-fx12abcd' },
-        { order: 3, item: 'Share workshop photos with comms team', detail: 'AI Learning Hub · Sent 12 photos', link: '', taskId: 'W-fx9abcde' }],
-      'In progress': [{ order: 1, item: 'Send AI Learning Hub launch note to staff', detail: 'AI Learning Hub · due ' + d(0) + ' · High', link: 'https://mail.google.com/mail/u/bbaki@aisa.sch.ae/#all/18f3a1b2c3d4e5f6', taskId: 'W-fx1abcde' },
-        { order: 2, item: 'Review Grade 10 Design unit plan draft', detail: 'Grade 10 Design · due ' + d(-1) + ' · High', link: 'https://docs.google.com/document/d/1AbCdEf/edit', taskId: 'W-fx3abcde' },
-        { order: 3, item: 'Order replacement micro:bits', detail: 'Robotics Club · Twelve units are dead; budget code needed.', link: '', taskId: 'W-fx6abcde' }],
-      'Questions': [{ order: 1, item: '«Book the robotics lab for the Grade 9 showcase» is overdue (due ' + d(-3) + '). Still a priority, or should the date move?', detail: '', link: '', taskId: 'W-fx2abcde' },
-        { order: 2, item: 'Order replacement micro:bits: Twelve units are dead; budget code needed.', detail: '', link: '', taskId: 'W-fx6abcde' },
-        { order: 3, item: 'The newsletter draft includes 3 items. Is there anything you would like added or held back?', detail: '', link: '', taskId: '' },
-        { order: 4, item: 'Anything from your side that should go on my list for next week?', detail: '', link: '', taskId: '' }],
-      'Documents': [{ order: 1, item: 'Review Grade 10 Design unit plan draft', detail: '', link: 'https://docs.google.com/document/d/1AbCdEf/edit', taskId: 'W-fx3abcde' },
-        { order: 2, item: 'Set up Chat space for Hub mentors', detail: '', link: 'https://chat.google.com/room/AAAAmentors', taskId: 'W-fx11abcd' }],
-      'Notes': [{ order: 1, item: 'Sarah wants the Hub numbers before the board meeting on Wednesday.', detail: '', link: '', taskId: '' }]
+      'Done': [{ order: 1, item: 'Set up Chat space for Hub mentors', detail: 'AI Learning Hub · Eight mentors joined', link: 'https://chat.google.com/room/AAAAmentors', taskId: 'W-fx11abcd', generated: REVIEW },
+        { order: 2, item: 'Finish MYP unit reflections', detail: 'Grade 10 Design', link: '', taskId: 'W-fx12abcd', generated: REVIEW },
+        { order: 3, item: 'Share workshop photos with comms team', detail: 'AI Learning Hub · Sent 12 photos', link: '', taskId: 'W-fx9abcde', generated: MINE }],
+      'In progress': [{ order: 1, item: 'Send AI Learning Hub launch note to staff', detail: 'AI Learning Hub · due ' + d(0) + ' · High', link: 'https://mail.google.com/mail/u/bbaki@aisa.sch.ae/#all/18f3a1b2c3d4e5f6', taskId: 'W-fx1abcde', generated: REVIEW },
+        { order: 2, item: 'Review Grade 10 Design unit plan draft', detail: 'Grade 10 Design · due ' + d(-1) + ' · High', link: 'https://docs.google.com/document/d/1AbCdEf/edit', taskId: 'W-fx3abcde', generated: REVIEW },
+        { order: 3, item: 'Order replacement micro:bits', detail: 'Robotics Club · Twelve units are dead; budget code needed.', link: '', taskId: 'W-fx6abcde', generated: REVIEW }],
+      'Questions': [{ order: 1, item: '«Book the robotics lab for the Grade 9 showcase» is overdue (due ' + d(-3) + '). Still a priority, or should the date move?', detail: '', link: '', taskId: 'W-fx2abcde', generated: REVIEW },
+        { order: 2, item: 'Order replacement micro:bits: Twelve units are dead; budget code needed.', detail: '', link: '', taskId: 'W-fx6abcde', generated: REVIEW },
+        { order: 3, item: 'The newsletter draft includes 3 items. Is there anything you would like added or held back?', detail: '', link: '', taskId: '', generated: MINE },
+        { order: 4, item: 'Anything from your side that should go on my list for next week?', detail: '', link: '', taskId: '', generated: REVIEW }],
+      'Documents': [{ order: 1, item: 'Review Grade 10 Design unit plan draft', detail: 'The rubric to agree', link: 'https://docs.google.com/document/d/1AbCdEf/edit', taskId: 'W-fx3abcde', generated: REVIEW },
+        { order: 2, item: 'Set up Chat space for Hub mentors', detail: '', link: 'https://chat.google.com/room/AAAAmentors', taskId: 'W-fx11abcd', generated: MINE }],
+      'Notes': [{ order: 1, item: 'Sarah wants the Hub numbers before the board meeting on Wednesday.', detail: '', link: '', taskId: '', generated: MINE }]
     };
   })();
 
@@ -127,19 +129,34 @@
     var prog = work.filter(function (t) { return t.status === 'Open' && (t.priority === 'High' || t.discuss || inWindow(t.updated.slice(0, 10), w) || inWindow(t.created, w)); })
       .sort(function (a, b) { return (a.priority === 'High' ? 0 : 1) - (b.priority === 'High' ? 0 : 1) || ((a.due || '9') > (b.due || '9') ? 1 : -1); });
     var sections = { 'Done': [], 'In progress': [], 'Questions': [], 'Documents': [], 'Notes': [] };
-    done.forEach(function (t, i) { sections.Done.push({ order: i + 1, item: t.title, detail: (t.project || '') + (t.note ? ' · ' + t.note : ''), link: t.link, taskId: t.id }); });
-    prog.forEach(function (t, i) { sections['In progress'].push({ order: i + 1, item: t.title, detail: [t.project, t.due ? 'due ' + t.due : '', t.priority === 'High' ? 'High' : ''].filter(Boolean).join(' · '), link: t.link, taskId: t.id }); });
+    done.forEach(function (t, i) { sections.Done.push({ order: i + 1, item: t.title, detail: (t.project || '') + (t.note ? ' · ' + t.note : ''), link: t.link, taskId: t.id, generated: 'web-draft' }); });
+    prog.forEach(function (t, i) { sections['In progress'].push({ order: i + 1, item: t.title, detail: [t.project, t.due ? 'due ' + t.due : '', t.priority === 'High' ? 'High' : ''].filter(Boolean).join(' · '), link: t.link, taskId: t.id, generated: 'web-draft' }); });
     var qs = [];
     work.filter(function (t) { return t.status === 'Open' && t.due && t.due < TODAY; }).slice(0, 1).forEach(function (t) { qs.push('«' + t.title + '» is overdue (due ' + t.due + '). Still a priority, or should the date move?'); });
     work.filter(function (t) { return t.status === 'Open' && t.discuss; }).slice(0, 1).forEach(function (t) { qs.push(t.title + ': ' + (t.note || t.details || 'what do you need from me on this?')); });
     qs.push('Anything from your side that should go on my list for next week?');
-    sections.Questions = (keep && keep.Questions && keep.Questions.length) ? clone(keep.Questions) : qs.map(function (q, i) { return { order: i + 1, item: q, detail: '', link: '', taskId: '' }; });
+    sections.Questions = (keep && keep.Questions && keep.Questions.length) ? clone(keep.Questions) : qs.map(function (q, i) { return { order: i + 1, item: q, detail: '', link: '', taskId: '', generated: 'web-draft' }; });
     var seen = {};
     work.filter(function (t) { return t.link && /^https?:/i.test(t.link) && ((t.discuss && (t.status === 'Open' || (t.status === 'Done' && inWindow(t.done, w)))) || (t.status === 'Done' && inWindow(t.done, w))); })
-      .forEach(function (t) { if (!seen[t.link]) { seen[t.link] = 1; sections.Documents.push({ order: sections.Documents.length + 1, item: t.title, detail: '', link: t.link, taskId: t.id }); } });
+      .forEach(function (t) { if (!seen[t.link]) { seen[t.link] = 1; sections.Documents.push({ order: sections.Documents.length + 1, item: t.title, detail: '', link: t.link, taskId: t.id, generated: 'web-draft' }); } });
     sections.Notes = (keep && keep.Notes) ? clone(keep.Notes) : [];
-    return { meetingDate: meeting, weekOf: weekOf(meeting), window: w, saved: false, sections: sections };
+    return { meetingDate: meeting, weekOf: weekOf(meeting), window: w, saved: false, sections: sections, stamp: agendaStamp(weekOf(meeting)) };
   }
+  // The week's fingerprint, as Agenda.gs computes it from the sheet: any change to the stored rows changes it (djb2 over the rows).
+  function agendaStamp(wk) {
+    var text = JSON.stringify(agendaStore[wk] || null), h = 5381;
+    for (var i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+    return ('0000000' + h.toString(16)).slice(-8) + ('0000000' + text.length.toString(16)).slice(-8);
+  }
+  // Column H as saveAgenda writes it (docs/AGENDA.md section 2), and read back: a tag stays, "web-draft" gets the save time,
+  // anything else is Brandon's line (the save time, read back as yyyy-MM-dd HH:mm:ss).
+  var AGENDA_TAG = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})? (claude-desk|claude-review|web-draft)$/;
+  function savedGenerated(g) {
+    if (typeof g === 'string' && AGENDA_TAG.test(g)) return g;
+    if (g === 'web-draft') return TODAY + ' 09:30 web-draft';
+    return TODAY + ' 09:30:00';
+  }
+  var AGENDA_CONFLICT = "This agenda changed since you opened it (Claude's weekly review or another tab saved it). Copy any edits you want to keep, then reload the agenda.";
 
   var log = [{ time: NOW, fn: 'captureInbox', level: 'INFO', message: 'gmail 4, chat 2, chatMode api' }, { time: d(-1) + 'T06:16:00+04:00', fn: 'healSheet', level: 'INFO', message: 'Work: filled 1 ID' }];
 
@@ -212,7 +229,7 @@
       { when: 'Tue 20', title: 'Grade 9 showcase', detail: 'Robotics lab, 13:00', href: CAL + '20' },
       { when: 'Wed 21', title: 'Leadership team meeting', detail: '14:00–15:00', href: 'javascript:alert(1)' }
     ],
-    agenda: { title: 'Tue 13 Oct · Director', open: true, sections: [
+    agenda: { title: 'Tue 13 Oct · Director', open: true, meeting: '2026-10-13', sections: [
       { name: 'Done', items: [{ t: 'Hub mentors on board', d: 'Eight mentors in the Chat space' }, { t: 'Assessment calendar submitted', d: 'Sent to Omar on Friday' }, { t: 'Workshop photos shared', d: '' }] },
       { name: 'In progress', items: [{ t: 'Hub launch note', d: '+18 sign-ups since the soft launch' }, { t: 'Grade 10 Design unit plan', d: 'Rubric with Lina by Monday' }, { t: 'Single sign-on for the Hub portal', d: 'Waiting on IT for a date' }] },
       { name: 'Decisions & questions', items: [{ t: 'Budget for twelve replacement micro:bits?', d: 'Finance needs the code by Thursday' }, { t: '=Shared drive clean-up: still mine?', d: '' }, { t: 'Anything from your side for my list next week?', d: '' }] }
@@ -405,14 +422,19 @@
     ignoreInbox: function (p) { var ok = false; inbox.forEach(function (i) { if (i.id === p.inboxId) { i.status = 'Ignored'; ok = true; } }); if (!ok) throw new Error('Inbox item not found'); return { ok: true }; },
     getAgenda: function (p) {
       var meeting = p.meetingDate || nextMeeting(TODAY), wk = weekOf(meeting);
-      if (agendaStore[wk]) return { meetingDate: meeting, weekOf: wk, window: windowFor(meeting), saved: true, sections: clone(agendaStore[wk]) };
+      if (agendaStore[wk]) return { meetingDate: meeting, weekOf: wk, window: windowFor(meeting), saved: true, sections: clone(agendaStore[wk]), stamp: agendaStamp(wk) };
       return buildDraft(meeting, null);
     },
     saveAgenda: function (p) {
       if (!p.meetingDate) throw new Error('meetingDate is required');
-      var n = 0, sections = {}; ['Done', 'In progress', 'Questions', 'Documents', 'Notes'].forEach(function (s) { sections[s] = clone((p.sections && p.sections[s]) || []); n += sections[s].length; });
-      agendaStore[weekOf(p.meetingDate)] = sections;
-      return { ok: true, rows: n };
+      var wk = weekOf(p.meetingDate);
+      if (typeof p.stamp === 'string' && p.stamp !== agendaStamp(wk)) throw new Error(AGENDA_CONFLICT);
+      var n = 0, sections = {}; ['Done', 'In progress', 'Questions', 'Documents', 'Notes'].forEach(function (s) {
+        sections[s] = clone((p.sections && p.sections[s]) || []).map(function (r) { r.generated = savedGenerated(r.generated); return r; });
+        n += sections[s].length;
+      });
+      agendaStore[wk] = sections;
+      return { ok: true, rows: n, stamp: agendaStamp(wk) };
     },
     regenerateAgenda: function (p) { var meeting = p.meetingDate || nextMeeting(TODAY); return buildDraft(meeting, agendaStore[weekOf(meeting)] || null); },
     getNewsletter: function (p) {
@@ -438,7 +460,7 @@
   var deskParam = /[?&]desk=(empty|invalid|stale|minimal)\b/.exec(location.search);
   var mock = { state: { tasks: tasks, inbox: inbox, agendaStore: agendaStore, config: config, today: TODAY, desk: desk }, latency: 40, chatMode: 'api', calls: [], failures: {},
     deskMode: deskParam ? deskParam[1] : 'ok',
-    failNext: function (name, message) { mock.failures[name] = message || 'Mock failure'; } };
+    failNext: function (name, message) { mock.failures[name] = message || 'Mock failure'; }, agendaStamp: agendaStamp };
   window.__mock = mock;
 
   function runner(success, failure) {

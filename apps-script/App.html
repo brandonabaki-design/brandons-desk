@@ -111,11 +111,14 @@ function csvFromRows(rows) {
     }).join(',');
   }).join('\r\n');
 }
+/* The "Window: …" line belongs to an unsaved draft only: a saved agenda may cover more than meeting − 7 … meeting − 1 (after a
+   missed meeting the weekly review covers two weeks; docs/AGENDA.md section 2). */
+function agendaShowsWindow(agenda) { return !!(agenda && agenda.window && !agenda.saved); }
 function buildAgendaWorkbookRows(agenda, opts) {
   opts = opts || {};
   var rows = [], links = [];
   rows.push(['Director meeting agenda — ' + formatDateLong(agenda.meetingDate)]);
-  if (agenda.window) rows.push(['Window: ' + formatDateLong(agenda.window.from) + ' to ' + formatDateLong(agenda.window.to)]);
+  if (agendaShowsWindow(agenda)) rows.push(['Window: ' + formatDateLong(agenda.window.from) + ' to ' + formatDateLong(agenda.window.to)]);
   if (opts.directorName) rows.push(['Director: ' + formulaGuard(opts.directorName)]);
   rows.push([]);
   rows.push(['Section', 'Item', 'Detail', 'Link']);
@@ -132,7 +135,7 @@ function buildAgendaWorkbookRows(agenda, opts) {
 function agendaToText(agenda, opts) {
   opts = opts || {};
   var lines = ['Director meeting agenda — ' + formatDateLong(agenda.meetingDate)];
-  if (agenda.window) lines.push('Window: ' + formatDateLong(agenda.window.from) + ' to ' + formatDateLong(agenda.window.to));
+  if (agendaShowsWindow(agenda)) lines.push('Window: ' + formatDateLong(agenda.window.from) + ' to ' + formatDateLong(agenda.window.to));
   if (opts.directorName) lines.push('Director: ' + opts.directorName);
   AGENDA_SECTIONS.forEach(function (name) {
     var list = (agenda.sections && agenda.sections[name]) || [];
@@ -146,6 +149,39 @@ function agendaToText(agenda, opts) {
   });
   return lines.join('\n');
 }
+/* A getAgenda / regenerateAgenda answer with every section present, each row's fields as text and its `generated` kept (it goes
+   back with the save so the server keeps a Claude line's provenance; docs/AGENDA.md section 2), plus the week's stamp. */
+function normaliseAgenda(a) {
+  a = deskIsObj(a) ? a : {};
+  var src = deskIsObj(a.sections) ? a.sections : {}, sections = {};
+  AGENDA_SECTIONS.forEach(function (s) {
+    sections[s] = deskList(src[s]).filter(deskIsObj).map(function (r) {
+      return { order: Number(r.order) || 0, item: deskStr(r.item), detail: deskStr(r.detail), link: deskStr(r.link), taskId: deskStr(r.taskId), generated: deskStr(r.generated) };
+    });
+  });
+  a.sections = sections;
+  a.meetingDate = deskStr(a.meetingDate);
+  a.window = deskIsObj(a.window) ? { from: deskStr(a.window.from), to: deskStr(a.window.to) } : null;
+  a.saved = a.saved === true;
+  a.stamp = typeof a.stamp === 'string' ? a.stamp : '';
+  return a;
+}
+/* The sections saveAgenda gets: rows with an Item (a Documents row typed as a bare link uses the link as its name; in the other
+   sections a row whose text was cleared is dropped, not saved as its task link), renumbered, each with its generated as loaded
+   ('' once Brandon edited or added it). */
+function agendaSectionsForSave(sections) {
+  var out = {};
+  AGENDA_SECTIONS.forEach(function (name) {
+    function itemOf(r) { return cleanText(r.item) || (name === 'Documents' ? sanitiseLink(r.link) : ''); }
+    out[name] = deskList(sections && sections[name]).filter(function (r) { return r && itemOf(r); }).map(function (r, i) {
+      return { order: i + 1, item: itemOf(r), detail: cleanText(r.detail), link: sanitiseLink(r.link), taskId: r.taskId || '',
+        generated: typeof r.generated === 'string' ? r.generated : '' };
+    });
+  });
+  return out;
+}
+/* saveAgenda refused the save because the week changed in the sheet since it was loaded (Agenda.gs AGENDA_CONFLICT_MESSAGE). */
+function isAgendaConflict(message) { return /changed since you opened it/.test(String(message || '')); }
 function buildNewsletterWorkbookRows(tasks, range) {
   range = range || {};
   var rows = [], links = [];
@@ -237,6 +273,8 @@ function deskList(v) { return Array.isArray(v) ? v : []; }
 function deskIsObj(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
 /* [kind, text] tags and [label, target] links: anything that is not a 2+ element array is dropped. */
 function deskPairs(v) { return deskList(v).filter(function (p) { return Array.isArray(p) && p.length >= 2; }).map(function (p) { return [deskStr(p[0]), deskStr(p[1])]; }); }
+/* A yyyy-MM-dd date (the agenda's meeting), else ''. */
+function deskYmd(v) { var s = deskStr(v).trim(); return /^\d{4}-\d{2}-\d{2}$/.test(s) && parseYmd(s) ? s : ''; }
 function deskTexts(v) { return deskList(v).map(deskStr).filter(function (s) { return cleanText(s) !== ''; }); }
 /* Work or Personal, as the server decides it (DESK.md section 2): the task prefix, else a "home" tag, else Work. */
 function deskCategoryOf(item) {
@@ -255,7 +293,7 @@ function normaliseDesk(d) {
     .map(function (l) { return { key: deskStr(l.key), title: deskStr(l.title) || deskStr(l.key) }; });
   if (!lanes.length) lanes = DESK_LANES.map(function (l) { return { key: l.key, title: l.title }; });
   var agenda = deskIsObj(d.agenda) ? {
-    title: deskStr(d.agenda.title) || 'Director agenda', open: d.agenda.open === true,
+    title: deskStr(d.agenda.title) || 'Director agenda', open: d.agenda.open === true, meeting: deskYmd(d.agenda.meeting),
     sections: deskList(d.agenda.sections).filter(deskIsObj).map(function (s) {
       return { name: deskStr(s.name), items: deskList(s.items).filter(deskIsObj).map(function (i) { return { t: deskStr(i.t), d: deskStr(i.d) }; }) };
     })
@@ -326,6 +364,19 @@ function deskAgendaToText(agenda) {
     parts.push(lines.join('\n'));
   });
   return parts.join('\n\n');
+}
+/* The Desk's agenda block from the saved agenda of its meeting (docs/AGENDA.md section 2): Done, In progress, "Decisions &
+   questions" (from Questions) and, when there are any, Documents with their links; Notes stay on the Agenda page. Same
+   {name, items:[{t, d}]} shape as the Desk JSON's sections; Documents items also carry their sanitised link. */
+function deskSavedAgendaSections(agenda) {
+  var src = (agenda && agenda.sections) || {};
+  function section(key, name) {
+    return { name: name, items: deskList(src[key]).map(function (r) { return { t: cleanText(r.item), d: cleanText(r.detail), link: sanitiseLink(r.link) }; }) };
+  }
+  var out = [section('Done', 'Done'), section('In progress', 'In progress'), section('Questions', 'Decisions & questions')];
+  var docs = section('Documents', 'Documents');
+  if (docs.items.length) { docs.docs = true; out.push(docs); }
+  return out;
 }
 /* Download .xlsx for the Desk agenda: one sheet "Agenda", title rows (agenda title, director), a blank row, then Section / Item / Detail.
    Same shape as buildAgendaWorkbookRows, so downloadWorkbook() writes it (or the CSV fallback). Every cell is formula-guarded. */
@@ -437,7 +488,7 @@ var state = {
   tasks: [], search: '', qaCategory: 'Work', expanded: null, noteFor: null, draft: null, doneOpen: {},
   inbox: { status: 'New', items: [], promoting: null, chatMode: '' },
   imp: { textRows: [], htmlRows: [], htmlName: '' },
-  agenda: null, agendaDirty: false, nl: { tasks: [], markdown: '', from: '', to: '' }, history: { tasks: [], loaded: false },
+  agenda: null, agendaDirty: false, agendaEdits: 0, agendaSaving: false, agendaRegenerating: false, agendaOpenAt: '', nl: { tasks: [], markdown: '', from: '', to: '' }, history: { tasks: [], loaded: false },
   loaded: {}
 };
 function api(name, payload) {
@@ -554,9 +605,14 @@ function navigate(name) {
   if (state.page !== name || !state.booted) showPage(name);
 }
 function loadPage(name) {
-  if (name === 'desk') { if (!deskState.loaded && !deskState.loading) loadDesk(); else if (deskState.loaded) renderDesk(); } // re-entering re-reads ticks made on the Tasks page
+  if (name === 'desk') {
+    if (!deskState.loaded && !deskState.loading) loadDesk();
+    else if (deskState.loaded) { renderDesk(); loadDeskAgenda(); } // re-entering re-reads ticks made on the Tasks page and the saved agenda
+  }
   if (name === 'inbox' && !state.loaded.inbox) loadInbox();
-  if (name === 'agenda' && !state.agenda) loadAgenda('');
+  // The agenda is read again on every visit (Claude's routines write the Agenda tab too), unless there are unsaved edits or a save
+  // or a regenerate is on its way (a reload would overtake the regenerated draft and drop it).
+  if (name === 'agenda' && !state.agendaDirty && !state.agendaSaving) loadAgenda(state.agendaOpenAt || (state.agenda ? state.agenda.meetingDate : ''));
   if (name === 'newsletter' && !state.loaded.newsletter) loadNewsletter();
   if (name === 'history' && !state.history.loaded) loadHistory();
 }
@@ -860,7 +916,8 @@ function quickAdd() {
    rolled back with the error toast when the server refuses it. All text goes in through textContent, links through deskHref. */
 var deskState = {
   loaded: false, loading: false, error: '', data: null, reason: '', message: '', builtDate: '', builtAt: '', stale: false, url: DESK_URL,
-  addedIds: [], pendingAdds: [], addCategory: 'Work', noteFor: '', noteDraft: '', agendaOpen: null, form: null, ops: Object.create(null)
+  addedIds: [], pendingAdds: [], addCategory: 'Work', noteFor: '', noteDraft: '', agendaOpen: null, form: null, ops: Object.create(null),
+  agendaSaved: null, agendaSeq: 0
 };
 var deskSeq = 0;
 function loadDesk() {
@@ -870,6 +927,7 @@ function loadDesk() {
     deskState.loading = false; deskState.loaded = true;
     applyDeskResponse(r || {});
     renderDesk();
+    loadDeskAgenda();
   }, function (e) {
     // A failed read leaves loaded false, so coming back to the tab (or Try again) asks again.
     deskState.loading = false; deskState.loaded = false; deskState.error = errText(e);
@@ -894,6 +952,33 @@ function applyDeskResponse(r) {
   });
   var extra = deskState.addedIds.filter(function (id) { return ids.indexOf(id) < 0 && !linked[id] && findTask(id); }); // added while getDesk ran
   deskState.addedIds = extra.concat(ids);
+}
+/* The saved agenda of the Desk's meeting (docs/AGENDA.md section 2), read after the Desk loads and on every visit. It never
+   touches the board, ticks or notes: only the agenda block is swapped. Only the answer to the latest read for the meeting the
+   Desk still shows is used; an unsaved week or a failed read falls back to the Desk JSON's agenda. */
+function deskAgendaMeeting() { var a = deskState.data && deskState.data.agenda; return a ? a.meeting : ''; }
+function deskSavedAgenda() { var s = deskState.agendaSaved; return s && s.meeting && s.meeting === deskAgendaMeeting() ? s.agenda : null; }
+function loadDeskAgenda() {
+  var meeting = deskAgendaMeeting(), seq = ++deskState.agendaSeq;
+  if (!meeting) return;
+  function apply(saved) {
+    if (seq !== deskState.agendaSeq || deskAgendaMeeting() !== meeting) return;
+    var before = deskSavedAgenda();
+    deskState.agendaSaved = saved;
+    var after = deskSavedAgenda();
+    if ((before ? before.stamp + '|' + before.meetingDate : '') !== (after ? after.stamp + '|' + after.meetingDate : '')) renderDeskAgenda();
+  }
+  api('getAgenda', { meetingDate: meeting }).then(function (r) {
+    apply(r && r.saved === true ? { meeting: meeting, agenda: normaliseAgenda(r) } : null);
+  }, function () { apply(null); });
+}
+/* Swaps in the agenda block alone, keeping keyboard focus on the same control (by id). */
+function renderDeskAgenda() {
+  var old = $('desk-agenda'), d = deskState.data;
+  if (!old || !d || !d.agenda) return;
+  var a = document.activeElement, focusId = a && old.contains(a) ? a.id : '';
+  old.parentNode.replaceChild(deskAgendaEl(d.agenda), old);
+  if (focusId && $(focusId)) $(focusId).focus();
 }
 /* A task that left state.tasks on another page, as the next getDesk would read it: a Desk item whose row was dropped is done
    (DESK.md 2: Dropped counts as done), and one whose row was moved follows the copy in the other list. If the drop fails or is
@@ -1151,28 +1236,45 @@ function deskTwoEl(d) {
     h('div', { class: 'dk-col' }, [deskSecHead('Coming up', 'next few weeks'), h('div', { class: 'dk-panel' }, d.coming.length ? tl : h('p', { class: 'dk-none', text: 'Nothing dated coming up.' }))])
   ]);
 }
+/* The director agenda block. Its title and open state come from the Desk JSON; its sections from the saved agenda of the
+   meeting when there is one (docs/AGENDA.md section 2), else from the Desk JSON. Full agenda opens the Agenda page at that date. */
 function deskAgendaEl(a) {
+  var saved = deskSavedAgenda();
+  var sections = saved ? deskSavedAgendaSections(saved) : a.sections;
   var det = h('details', { class: 'dk-panel dk-agenda', id: 'desk-agenda', open: deskState.agendaOpen === null ? a.open : deskState.agendaOpen,
     ontoggle: function () { deskState.agendaOpen = det.open; } }, [
     // the click records the new state at once: a re-render can land before the (asynchronous) toggle event
     h('summary', { id: 'desk-agenda-summary', onclick: function () { deskState.agendaOpen = !det.open; } }, [h('h2', { text: a.title }), h('span', { class: 'dk-eyebrow', text: 'director agenda' })]),
-    h('div', { class: 'dk-ag' }, a.sections.map(function (s) {
-      return h('div', {}, [h('h3', { text: s.name }), h('ol', {}, s.items.map(function (i) { return h('li', {}, [h('b', { text: i.t }), i.d ? h('span', { text: i.d }) : null]); }))]);
+    h('div', { class: 'dk-ag' + (sections.length > 3 ? ' dk-ag-4' : ''), id: 'desk-agenda-body', data: { source: saved ? 'saved' : 'desk' } }, sections.map(function (s) {
+      return h('div', {}, [h('h3', { text: s.name }), s.items.length ? h('ol', {}, s.items.map(function (i, n) { return s.docs ? deskAgendaDocEl(i, n) : h('li', {}, [h('b', { text: i.t }), i.d ? h('span', { text: i.d }) : null]); }))
+        : h('p', { class: 'dk-none', text: 'Nothing yet.' })]);
     })),
     h('div', { class: 'dk-ag-foot' }, [
       h('button', { type: 'button', class: 'dk-btn ghost', id: 'desk-agenda-copy', onclick: deskAgendaCopy }, 'Copy agenda as text'),
-      h('button', { type: 'button', class: 'dk-btn ghost', id: 'desk-agenda-download', onclick: deskAgendaDownload }, 'Download .xlsx')
+      h('button', { type: 'button', class: 'dk-btn ghost', id: 'desk-agenda-download', onclick: deskAgendaDownload }, 'Download .xlsx'),
+      h('a', { href: '#agenda', class: 'dk-open', id: 'desk-agenda-full', onclick: function (e) { e.preventDefault(); openAgendaAt(a.meeting); } }, 'Full agenda')
     ])
   ]);
   return det;
 }
+/* A Documents line: a link pill to the document when it has an http(s) link, else its name as text; the detail under it. */
+function deskAgendaDocEl(i, n) {
+  var u = deskHref(i.link), label = h('span', { class: 'dk-lnk-t', text: i.t || 'Document' });
+  return h('li', {}, [h('div', { class: 'dk-ag-doc' }, u ? h('a', { class: 'dk-lnk', href: u, target: '_blank', rel: 'noopener', id: 'desk-agenda-doc-' + n }, label) : h('b', { text: i.t })),
+    i.d ? h('span', { text: i.d }) : null]);
+}
+/* Copy and Download use the saved agenda when the block shows it (the Agenda page's text and file: documents, links, Notes),
+   else the Desk JSON's agenda in the routine page's format. */
 function deskAgendaCopy() {
-  var a = deskState.data && deskState.data.agenda;
-  if (a) copyText(deskAgendaToText(a)).then(function () { toast('Agenda copied as text', { type: 'ok' }); }, toastError);
+  var a = deskState.data && deskState.data.agenda, saved = deskSavedAgenda();
+  if (!a) return;
+  copyText(saved ? agendaToText(saved, { directorName: state.config.DIRECTOR_NAME }) : deskAgendaToText(a)).then(function () { toast('Agenda copied as text', { type: 'ok' }); }, toastError);
 }
 function deskAgendaDownload() {
-  var a = deskState.data && deskState.data.agenda;
-  if (a) downloadWorkbook(deskAgendaWorkbookRows(a, { directorName: state.config.DIRECTOR_NAME, builtDate: deskState.builtDate }));
+  var a = deskState.data && deskState.data.agenda, saved = deskSavedAgenda();
+  if (!a) return;
+  downloadWorkbook(saved ? buildAgendaWorkbookRows(saved, { directorName: state.config.DIRECTOR_NAME })
+    : deskAgendaWorkbookRows(a, { directorName: state.config.DIRECTOR_NAME, builtDate: deskState.builtDate }));
 }
 function deskLltEl(l) {
   var text = deskLltText(l);
@@ -1514,13 +1616,22 @@ function showImportResult(added, skipped, linked) {
 }
 
 /* ---------- Agenda ---------- */
+/* Every agenda read or regenerate gets a number; only the answer to the latest one is shown, so a reload on page entry that is
+   overtaken by Regenerate or another week never lands on top of it. */
+var agendaSeq = 0;
 function loadAgenda(meetingDate) {
-  var box = $('agenda-sections');
+  state.agendaOpenAt = ''; // any load (page entry, date picker, Discard edits, Reload agenda) uses up a pending Full agenda date
+  var box = $('agenda-sections'), seq = ++agendaSeq;
   clear(box); box.appendChild(emptyEl('Loading…'));
-  api('getAgenda', meetingDate ? { meetingDate: meetingDate } : {}).then(function (r) { state.agenda = normaliseAgenda(r); state.agendaDirty = false; renderAgenda(); },
-    function (e) { clear(box); box.appendChild(emptyEl('Could not load the agenda: ' + errText(e))); toastError(e); });
+  api('getAgenda', meetingDate ? { meetingDate: meetingDate } : {}).then(function (r) {
+    if (seq !== agendaSeq) return;
+    state.agenda = normaliseAgenda(r); state.agendaDirty = false; renderAgenda();
+  }, function (e) {
+    if (seq !== agendaSeq) return;
+    clear(box); box.appendChild(emptyEl('Could not load the agenda: ' + errText(e))); toastError(e);
+  });
 }
-/* Unsaved Questions/Notes/Documents edits are not thrown away silently: the action waits behind a toast with a "Discard edits" button
+/* Unsaved agenda edits are not thrown away silently: the action waits behind a toast with a "Discard edits" button
    (no window.confirm: the page runs in a sandboxed iframe, and a blocking dialog is not guaranteed there). */
 var agendaGuardToast = null;
 function agendaGuard(fn) {
@@ -1528,23 +1639,46 @@ function agendaGuard(fn) {
   if (agendaGuardToast) agendaGuardToast.dismiss(); // a repeated trigger replaces the pending prompt instead of stacking another
   agendaGuardToast = toast('You have unsaved agenda edits. Save first, or discard them.', { timeout: 8000, action: { label: 'Discard edits', fn: function () { agendaGuardToast = null; state.agendaDirty = false; fn(); } } });
 }
-function normaliseAgenda(a) {
-  a = a || {}; a.sections = a.sections || {};
-  AGENDA_SECTIONS.forEach(function (s) { a.sections[s] = (a.sections[s] || []).map(function (r) { return { order: r.order || 0, item: r.item || '', detail: r.detail || '', link: r.link || '', taskId: r.taskId || '' }; }); });
-  return a;
+/* An edit on the Agenda page: unsaved from now on. Editing a row's Item, Detail or link makes it Brandon's line, so its generated
+   goes (docs/AGENDA.md section 2); moving or removing rows passes no row and leaves every generated alone. */
+function agendaEdited(row) {
+  if (row) row.generated = '';
+  state.agendaDirty = true; state.agendaEdits++;
+}
+/* The Desk's "Full agenda" link: the Agenda page at that meeting date. Unsaved edits of another week are never dropped silently:
+   the page opens on them and the usual Discard edits toast offers the meeting's week instead. The link's page is hidden from
+   then on, so keyboard focus moves to the Agenda tab. */
+function openAgendaAt(meetingDate) {
+  var same = !meetingDate || (state.agenda && state.agenda.meetingDate === meetingDate);
+  if (state.agendaDirty && !same) {
+    navigate('agenda');
+    agendaGuard(function () { loadAgenda(meetingDate); });
+  } else {
+    state.agendaOpenAt = meetingDate || '';
+    navigate('agenda');
+    // Still set: loadPage did not reload (unsaved edits of this week, or a save or regenerate on its way). The same week stays
+    // as it is and the date is not kept for a later visit; another week opens now, as the date picker would.
+    if (state.agendaOpenAt) { if (same) state.agendaOpenAt = ''; else loadAgenda(meetingDate); }
+  }
+  focusIn('#tabs a[data-page="agenda"]');
 }
 function renderAgenda() {
   var a = state.agenda;
   if (!a) return;
   $('agenda-date').value = a.meetingDate || '';
-  $('agenda-window').textContent = a.window ? formatDateLabel(a.window.from, state.today) + ' – ' + formatDateLabel(a.window.to, state.today) : '';
-  $('agenda-state').textContent = a.saved ? 'Saved' : 'Draft';
-  $('agenda-state').className = 'badge' + (a.saved ? '' : ' gold');
+  renderAgendaState();
   $('agenda-director').textContent = state.config.DIRECTOR_NAME ? 'With ' + state.config.DIRECTOR_NAME : '';
   var box = $('agenda-sections');
   clear(box);
   AGENDA_SECTIONS.forEach(function (name) { box.appendChild(agendaSection(name, a.sections[name])); });
   Array.prototype.forEach.call(box.querySelectorAll('textarea'), autoGrow);
+}
+/* The window (an unsaved draft only) and the Saved/Draft badge. */
+function renderAgendaState() {
+  var a = state.agenda;
+  $('agenda-window').textContent = agendaShowsWindow(a) ? formatDateLabel(a.window.from, state.today) + ' – ' + formatDateLabel(a.window.to, state.today) : '';
+  $('agenda-state').textContent = a.saved ? 'Saved' : 'Draft';
+  $('agenda-state').className = 'badge' + (a.saved ? '' : ' gold');
 }
 function autoGrow(ta) {
   if (ta.parentNode) { ta.style.height = 'auto'; ta.style.height = (ta.scrollHeight + 2) + 'px'; }
@@ -1560,72 +1694,82 @@ function focusAgendaRow(name, index, label) {
   if (btn) { btn.focus(); return; }
   if (!focusIn('[data-section="' + name + '"] button.add')) focusIn('[data-section="' + name + '"] h2');
 }
+/* Every section is editable, reorderable and removable (docs/AGENDA.md section 2): an Item textarea and a Detail input, or for
+   Documents a name and a link. A non-Documents row that carries a link (a task's, or one Claude wrote) keeps its Open link. */
+var AGENDA_ITEM_LABELS = { 'Done': 'Done item', 'In progress': 'In progress item', 'Questions': 'Question', 'Notes': 'Note' };
+var AGENDA_ADD_LABELS = { 'Done': '+ Add item', 'In progress': '+ Add item', 'Questions': '+ Add question', 'Documents': '+ Add document', 'Notes': '+ Add note' };
 function agendaSection(name, list) {
-  var editable = name === 'Questions' || name === 'Notes' || name === 'Documents';
+  var docs = name === 'Documents';
   var sec = h('div', { class: 'agenda-section', data: { section: name } }, h('h2', { tabindex: '-1' }, [name, h('span', { class: 'muted', text: list.length ? String(list.length) : '' })]));
-  if (!list.length) sec.appendChild(emptyEl(editable ? 'Nothing yet.' : 'Nothing in this window.'));
+  if (!list.length) sec.appendChild(emptyEl('Nothing yet.'));
   list.forEach(function (row, i) {
-    var el = h('div', { class: 'arow' + (editable ? ' editable' : '') });
-    if (editable) {
-      var fields = h('div', { class: 'fields' + (name === 'Documents' ? ' two' : '') });
-      if (name === 'Documents') fields.appendChild(h('input', { type: 'text', class: 'input small', value: row.item, 'aria-label': 'Document name', placeholder: 'Document name', oninput: function () { row.item = this.value; state.agendaDirty = true; } }));
-      else fields.appendChild(autoGrow(h('textarea', { class: 'input small', rows: 1, value: row.item, 'aria-label': name.slice(0, -1), placeholder: name === 'Questions' ? 'Question' : 'Note',
-        oninput: function () { row.item = this.value; state.agendaDirty = true; autoGrow(this); } })));
-      if (name === 'Documents') fields.appendChild(h('input', { type: 'url', class: 'input small', value: row.link, placeholder: 'https://', 'aria-label': 'Link', oninput: function () { row.link = this.value; state.agendaDirty = true; } }));
-      else fields.appendChild(h('input', { type: 'text', class: 'input small', value: row.detail, placeholder: 'Detail (optional)', 'aria-label': 'Detail', oninput: function () { row.detail = this.value; state.agendaDirty = true; } }));
-      el.appendChild(fields);
-    } else {
-      var text = h('div', { class: 'text' }, [h('div', { text: row.item }), row.detail ? h('div', { class: 'detail', text: row.detail }) : null, linkEl(row.link, 'Open ↗', 'small')]);
-      el.appendChild(text);
-    }
+    var el = h('div', { class: 'arow editable' });
+    var fields = h('div', { class: 'fields' + (docs ? ' two' : '') });
+    if (docs) fields.appendChild(h('input', { type: 'text', class: 'input small', value: row.item, 'aria-label': 'Document name', placeholder: 'Document name', oninput: function () { row.item = this.value; agendaEdited(row); } }));
+    else fields.appendChild(autoGrow(h('textarea', { class: 'input small', rows: 1, value: row.item, 'aria-label': AGENDA_ITEM_LABELS[name], placeholder: AGENDA_ITEM_LABELS[name],
+      oninput: function () { row.item = this.value; agendaEdited(row); autoGrow(this); } })));
+    if (docs) fields.appendChild(h('input', { type: 'url', class: 'input small', value: row.link, placeholder: 'https://', 'aria-label': 'Link', oninput: function () { row.link = this.value; agendaEdited(row); } }));
+    else fields.appendChild(h('input', { type: 'text', class: 'input small', value: row.detail, placeholder: 'Detail (optional)', 'aria-label': 'Detail', oninput: function () { row.detail = this.value; agendaEdited(row); } }));
+    el.appendChild(fields);
     var ctl = h('div', { class: 'ctl' });
-    if (editable) {
-      ctl.appendChild(h('button', { type: 'button', class: 'btn icon small', 'aria-label': 'Move up', disabled: i === 0, onclick: function () {
-        list.splice(i, 1); list.splice(i - 1, 0, row); state.agendaDirty = true; renderAgenda(); focusAgendaRow(name, i - 1, 'Move up');
-      } }, '▲'));
-      ctl.appendChild(h('button', { type: 'button', class: 'btn icon small', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: function () {
-        list.splice(i, 1); list.splice(i + 1, 0, row); state.agendaDirty = true; renderAgenda(); focusAgendaRow(name, i + 1, 'Move down');
-      } }, '▼'));
-    }
+    if (!docs) { var open = linkEl(row.link, 'Open ↗', 'small'); if (open) ctl.appendChild(open); }
+    ctl.appendChild(h('button', { type: 'button', class: 'btn icon small', 'aria-label': 'Move up', disabled: i === 0, onclick: function () {
+      list.splice(i, 1); list.splice(i - 1, 0, row); agendaEdited(); renderAgenda(); focusAgendaRow(name, i - 1, 'Move up');
+    } }, '▲'));
+    ctl.appendChild(h('button', { type: 'button', class: 'btn icon small', 'aria-label': 'Move down', disabled: i === list.length - 1, onclick: function () {
+      list.splice(i, 1); list.splice(i + 1, 0, row); agendaEdited(); renderAgenda(); focusAgendaRow(name, i + 1, 'Move down');
+    } }, '▼'));
     ctl.appendChild(h('button', { type: 'button', class: 'btn icon small danger', 'aria-label': 'Remove', onclick: function () {
-      list.splice(i, 1); state.agendaDirty = true; renderAgenda(); focusAgendaRow(name, i, 'Remove');
+      list.splice(i, 1); agendaEdited(); renderAgenda(); focusAgendaRow(name, i, 'Remove');
     } }, '×'));
     el.appendChild(ctl);
     sec.appendChild(el);
   });
-  if (editable) sec.appendChild(h('button', { type: 'button', class: 'btn small add', onclick: function () {
-    list.push({ order: list.length + 1, item: '', detail: '', link: '', taskId: '' }); state.agendaDirty = true; renderAgenda();
+  sec.appendChild(h('button', { type: 'button', class: 'btn small add', onclick: function () {
+    list.push({ order: list.length + 1, item: '', detail: '', link: '', taskId: '', generated: '' }); agendaEdited(); renderAgenda();
     var inputs = document.querySelectorAll('[data-section="' + name + '"] .arow input, [data-section="' + name + '"] .arow textarea'); if (inputs.length >= 2) inputs[inputs.length - 2].focus();
-  } }, '+ Add ' + (name === 'Documents' ? 'document' : name === 'Questions' ? 'question' : 'note')));
+  } }, AGENDA_ADD_LABELS[name]));
   return sec;
 }
-function agendaSectionsForSave() {
-  var out = {};
-  AGENDA_SECTIONS.forEach(function (name) {
-    // The server keeps only rows with an Item, so a Documents row typed as a bare link uses the link as its name.
-    out[name] = state.agenda.sections[name].filter(function (r) { return cleanText(r.item) || sanitiseLink(r.link); }).map(function (r, i) {
-      return { order: i + 1, item: cleanText(r.item) || sanitiseLink(r.link), detail: cleanText(r.detail), link: sanitiseLink(r.link), taskId: r.taskId || '' };
-    });
-  });
-  return out;
-}
+/* Save sends the stamp the agenda was loaded with; the server refuses the save when the week changed in the sheet since
+   (docs/AGENDA.md section 2), and the error toast then offers Reload agenda. On success the page keeps the new stamp, so a
+   second save needs no reload. Edits typed while the save was on its way stay unsaved (and on the page). */
 function saveAgenda() {
   if (!state.agenda) return;
-  var btn = $('agenda-save');
-  btn.disabled = true;
-  var sections = agendaSectionsForSave();
-  api('saveAgenda', { meetingDate: state.agenda.meetingDate, sections: sections }).then(function (r) {
-    state.agenda.sections = sections; state.agenda.saved = true; state.agendaDirty = false; renderAgenda();
+  var btn = $('agenda-save'), a = state.agenda, seq = agendaSeq, edits = state.agendaEdits;
+  var sections = agendaSectionsForSave(a.sections);
+  btn.disabled = true; state.agendaSaving = true;
+  api('saveAgenda', cleanPayload({ meetingDate: a.meetingDate, sections: sections, stamp: a.stamp || undefined })).then(function (r) {
+    a.saved = true; a.stamp = r && typeof r.stamp === 'string' ? r.stamp : '';
+    if (state.agenda === a && agendaSeq === seq) {
+      if (state.agendaEdits === edits) { a.sections = sections; state.agendaDirty = false; renderAgenda(); }
+      else renderAgendaState();
+    }
     toast('Agenda saved (' + ((r && r.rows) || 0) + ' rows)', { type: 'ok' });
-  }, toastError).then(function () { btn.disabled = false; });
+  }, function (e) {
+    if (isAgendaConflict(errText(e))) agendaConflictToast(a, e);
+    else toastError(e);
+  }).then(function () { btn.disabled = false; state.agendaSaving = false; });
 }
+/* The week changed in the sheet since it was loaded (the weekly review, or a save in another tab): the edits stay on the page
+   for copying, and Reload agenda drops them and reads that meeting date again (behind the usual guard if another week's agenda
+   has been opened and edited since). */
+function agendaConflictToast(a, e) {
+  toast(errText(e), { type: 'error', timeout: 60000, action: { label: 'Reload agenda', fn: function () {
+    if (state.agenda === a) { state.agendaDirty = false; loadAgenda(a.meetingDate); } else agendaGuard(function () { loadAgenda(a.meetingDate); });
+  } } });
+}
+/* A regenerated draft is unsaved work (docs/AGENDA.md section 2): it counts as edits, so leaving and coming back keeps it and
+   changing the week asks first. While it is on its way, coming back to the page does not reload over it either; the date picker
+   and Discard edits still do. */
 function regenerateAgenda() {
   if (!state.agenda) return;
-  var btn = $('agenda-regenerate');
-  btn.disabled = true;
+  var btn = $('agenda-regenerate'), seq = ++agendaSeq;
+  btn.disabled = true; state.agendaRegenerating = true;
   api('regenerateAgenda', { meetingDate: state.agenda.meetingDate }).then(function (r) {
-    state.agenda = normaliseAgenda(r); state.agendaDirty = false; renderAgenda(); toast('Draft regenerated from your tasks', { type: 'ok' });
-  }, toastError).then(function () { btn.disabled = false; });
+    if (seq !== agendaSeq) return;
+    state.agenda = normaliseAgenda(r); state.agendaDirty = true; state.agendaEdits++; renderAgenda(); toast('Draft regenerated from your tasks', { type: 'ok' });
+  }, toastError).then(function () { btn.disabled = false; state.agendaRegenerating = false; });
 }
 
 /* ---------- Newsletter ---------- */

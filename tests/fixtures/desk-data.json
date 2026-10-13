@@ -54,6 +54,7 @@
   "agenda": {
     "title": "Tue 20 Oct · Head of School",
     "open": false,
+    "meeting": "2026-10-20",
     "sections": [
       { "name": "Done", "items": [{ "t": "Robotics kits ordered", "d": "Arrived on Monday" }] },
       { "name": "In progress", "items": [{ "t": "Reading week plan", "d": "Book list shared" }] },

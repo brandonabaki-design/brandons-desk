@@ -5,6 +5,15 @@
 
 const QUESTION_CAP_ = 8;
 
+/**
+ * Generated (column H) provenance (docs/AGENDA.md section 1): the tag on a line of the web app's own draft, and
+ * the only text a save writes back as it came: "yyyy-MM-dd HH:mm[:ss] <tag>" for the three tags.
+ */
+const AGENDA_DRAFT_TAG = 'web-draft';
+const AGENDA_TAG_RE_ = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})? (claude-desk|claude-review|web-draft)$/;
+const AGENDA_CONFLICT_MESSAGE = "This agenda changed since you opened it (Claude's weekly review or another tab saved it). " +
+  'Copy any edits you want to keep, then reload the agenda.';
+
 /** Window for a meeting date: weekOf (Monday), from = meeting − 7, to = meeting − 1. */
 function agendaWindow(meetingDate) {
   const md = toDateString(meetingDate);
@@ -37,13 +46,14 @@ function emptySections() {
   return out;
 }
 
-function agendaRow_(order, item, detail, link, taskId) {
+function agendaRow_(order, item, detail, link, taskId, generated) {
   return {
     order: order,
     item: truncate(collapseWhitespace(item), 300),
     detail: truncate(collapseWhitespace(detail), 1000),
     link: sanitiseLink(link),
-    taskId: str(taskId).trim()
+    taskId: str(taskId).trim(),
+    generated: str(generated).trim()
   };
 }
 
@@ -52,7 +62,8 @@ function renumber_(rows) {
 }
 
 /**
- * Builds the draft sections from Work tasks. Pure (tasks in, sections out).
+ * Builds the draft sections from Work tasks. Pure (tasks in, sections out). Every row is generated
+ * "web-draft", so a line saved unchanged keeps that provenance (docs/AGENDA.md section 1).
  * @param {Array} tasks Work Task objects
  * @param {Object} win agendaWindow() result
  * @param {string} today yyyy-MM-dd
@@ -75,7 +86,7 @@ function buildAgendaDraft(tasks, win, today) {
       if (a.done !== b.done) return a.done < b.done ? -1 : 1;
       return (a.row || 0) - (b.row || 0);
     });
-  sections.Done = renumber_(done.map((x) => agendaRow_(0, x.title, joinDetail_(x.project, x.note), x.link, x.id)));
+  sections.Done = renumber_(done.map((x) => agendaRow_(0, x.title, joinDetail_(x.project, x.note), x.link, x.id, AGENDA_DRAFT_TAG)));
 
   // In progress: Open and (High, Discuss, Updated in window or Created in window).
   const progress = work.filter((x) => x.status === 'Open' &&
@@ -93,9 +104,9 @@ function buildAgendaDraft(tasks, win, today) {
       return (a.row || 0) - (b.row || 0);
     });
   sections['In progress'] = renumber_(progress.map((x) => agendaRow_(0, x.title,
-    joinDetail_(x.project, x.due ? 'due ' + x.due : '', x.priority === 'High' ? 'High' : '', x.discuss ? 'discuss' : '', x.note), x.link, x.id)));
+    joinDetail_(x.project, x.due ? 'due ' + x.due : '', x.priority === 'High' ? 'High' : '', x.discuss ? 'discuss' : '', x.note), x.link, x.id, AGENDA_DRAFT_TAG)));
 
-  sections.Questions = renumber_(buildQuestions(work, win, t).map((q) => agendaRow_(0, q.text, q.detail, q.link, q.taskId)));
+  sections.Questions = renumber_(buildQuestions(work, win, t).map((q) => agendaRow_(0, q.text, q.detail, q.link, q.taskId, AGENDA_DRAFT_TAG)));
 
   // Documents: distinct links on Discuss-ticked tasks (Open or Done in window) and Done-in-window tasks.
   // Task.link comes from the sheet unsanitised; key and store the sanitised form so a non-http Link
@@ -110,7 +121,7 @@ function buildAgendaDraft(tasks, win, today) {
     if (!discussed && !doneNow) return;
     if (seen.has(link)) return;
     seen.add(link);
-    docs.push(agendaRow_(0, x.title, joinDetail_(x.project, x.status === 'Done' ? 'done ' + x.done : ''), link, x.id));
+    docs.push(agendaRow_(0, x.title, joinDetail_(x.project, x.status === 'Done' ? 'done ' + x.done : ''), link, x.id, AGENDA_DRAFT_TAG));
   });
   sections.Documents = renumber_(docs);
   sections.Notes = [];
@@ -188,12 +199,40 @@ function buildQuestions(tasks, win, today) {
 // Agenda tab
 // ---------------------------------------------------------------------------
 
-/** Saved rows for a weekOf, as sections. */
+/** The Agenda rows whose Week of is weekOf (as Date or yyyy-MM-dd text), in sheet order, whatever their Section. */
+function agendaWeekRows_(weekOf) {
+  return readRows(TABS.AGENDA).filter((r) => toDateString(r.weekOf) === weekOf);
+}
+
+/**
+ * A Generated cell as text (docs/AGENDA.md section 2): a Date as yyyy-MM-dd HH:mm:ss in the configured
+ * zone (Asia/Dubai), anything else as its text, trimmed. Read only: column H is never healed or reformatted.
+ */
+function agendaGeneratedText_(v) {
+  if (isDateValue(v)) return formatDate(v, 'yyyy-MM-dd HH:mm:ss');
+  return unguardCell(str(v)).trim();
+}
+
+/**
+ * Fingerprint of one week's rows as the sheet holds them (docs/AGENDA.md section 2, stale-save protection):
+ * every row of that Week of in sheet order (all sections), each as section, order, item, detail, link, task ID
+ * and generated text, plus the row count. A short hex string that changes whenever one of those rows does;
+ * other weeks' rows and row numbers do not count.
+ */
+function agendaStamp_(rows) {
+  const parts = [String(rows.length)];
+  rows.forEach((r) => {
+    parts.push([r.section, r.order, r.item, r.detail, r.link, r.taskId].map((v) => str(v)).concat(agendaGeneratedText_(r.generated)).join('\u001f'));
+  });
+  return sha1Hex(parts.join('\u001e')).slice(0, 16);
+}
+
+/** Saved rows for a weekOf, as sections (each row with its generated text), and the week's stamp. */
 function readSavedSections_(weekOf) {
   const sections = emptySections();
   let any = false;
-  readRows(TABS.AGENDA).forEach((r) => {
-    if (toDateString(r.weekOf) !== weekOf) return;
+  const week = agendaWeekRows_(weekOf);
+  week.forEach((r) => {
     const section = str(r.section).trim();
     if (!AGENDA_SECTIONS.includes(section)) return;
     any = true;
@@ -203,37 +242,39 @@ function readSavedSections_(weekOf) {
       detail: unguardCell(str(r.detail)),
       link: sanitiseLink(r.link),
       taskId: str(r.taskId).trim(),
+      generated: agendaGeneratedText_(r.generated),
       row: r.row
     });
   });
   AGENDA_SECTIONS.forEach((s) => {
     sections[s].sort((a, b) => (a.order - b.order) || (a.row - b.row));
-    sections[s] = renumber_(sections[s].map((x) => agendaRow_(x.order, x.item, x.detail, x.link, x.taskId)));
+    sections[s] = renumber_(sections[s].map((x) => agendaRow_(x.order, x.item, x.detail, x.link, x.taskId, x.generated)));
   });
-  return { sections: sections, any: any };
+  return { sections: sections, any: any, stamp: agendaStamp_(week) };
 }
 
-function agendaResult_(win, saved, sections) {
+function agendaResult_(win, saved, sections, stamp) {
   return {
     meetingDate: win.meetingDate,
     weekOf: win.weekOf,
     window: { from: win.from, to: win.to },
     saved: !!saved,
-    sections: sections
+    sections: sections,
+    stamp: stamp
   };
 }
 
-/** getAgenda: {meetingDate?} → saved rows for that week, or a draft. */
+/** getAgenda: {meetingDate?} → saved rows for that week, or a draft; either way with the week's stamp. */
 function getAgenda_(input) {
   const config = readConfig();
   const win = agendaWindow(resolveMeetingDate_(input, config));
   const saved = readSavedSections_(win.weekOf);
-  if (saved.any) return agendaResult_(win, true, saved.sections);
+  if (saved.any) return agendaResult_(win, true, saved.sections, saved.stamp);
   const tasks = readTasks(TABS.WORK);
-  return agendaResult_(win, false, buildAgendaDraft(tasks, win, todayDubai()));
+  return agendaResult_(win, false, buildAgendaDraft(tasks, win, todayDubai()), saved.stamp);
 }
 
-/** regenerateAgenda: {meetingDate} → draft rebuilt from tasks, keeping saved Questions and Notes. */
+/** regenerateAgenda: {meetingDate} → draft rebuilt from tasks, keeping saved Questions and Notes (with their generated). */
 function regenerateAgenda_(input) {
   const config = readConfig();
   const win = agendaWindow(resolveMeetingDate_(input, config));
@@ -241,10 +282,13 @@ function regenerateAgenda_(input) {
   const draft = buildAgendaDraft(readTasks(TABS.WORK), win, todayDubai());
   if (saved.sections.Questions.length) draft.Questions = saved.sections.Questions;
   if (saved.sections.Notes.length) draft.Notes = saved.sections.Notes;
-  return agendaResult_(win, false, draft);
+  return agendaResult_(win, false, draft, saved.stamp);
 }
 
-/** Validates and normalises a sections payload into [{section, order, item, detail, link, taskId}]. */
+/**
+ * Validates and normalises a sections payload into [{section, order, item, detail, link, taskId, generated}].
+ * `generated` is the client's value as sent (a string, else ''); agendaGeneratedCell_ decides what column H gets.
+ */
 function normaliseSections_(sections) {
   if (!sections || typeof sections !== 'object') throw userError('Sections required');
   const rows = [];
@@ -260,7 +304,8 @@ function normaliseSections_(sections) {
         item: truncate(item, 300),
         detail: truncate(collapseWhitespace(r.detail), 1000),
         link: sanitiseLink(r.link),
-        taskId: truncate(str(r.taskId).trim(), TASK_ID_MAX)
+        taskId: truncate(str(r.taskId).trim(), TASK_ID_MAX),
+        generated: typeof r.generated === 'string' ? r.generated : ''
       });
     });
   });
@@ -273,7 +318,21 @@ function normaliseSections_(sections) {
 }
 
 /**
- * saveAgenda: {meetingDate, sections} → {ok:true, rows:n}. Replaces that week's rows.
+ * Column H for a saved row (docs/AGENDA.md section 2). A provenance tag as the sheet held it
+ * ("yyyy-MM-dd HH:mm[:ss] claude-desk|claude-review|web-draft") is written back exactly; the bare
+ * "web-draft" of an unchanged draft line becomes "<save time yyyy-MM-dd HH:mm> web-draft"; anything
+ * else is Brandon's line and gets the save time as a Date. No other client value reaches the cell.
+ */
+function agendaGeneratedCell_(generated, now, draftText) {
+  if (typeof generated === 'string') {
+    if (AGENDA_TAG_RE_.test(generated)) return generated;
+    if (generated === AGENDA_DRAFT_TAG) return draftText;
+  }
+  return now;
+}
+
+/**
+ * saveAgenda: {meetingDate, sections, stamp?} → {ok:true, rows:n, stamp}. Replaces that week's rows.
  *
  * Only the rows whose Week of is this weekOf are touched: they are deleted (bottom-up, as
  * contiguous runs) and the new rows are appended through appendRows(). Other weeks' rows,
@@ -281,12 +340,21 @@ function normaliseSections_(sections) {
  * back and rewritten, so a cell that holds the literal text "=…" can never be turned into a
  * live formula, a =HYPERLINK() or rich-text link in another week keeps its formula, and a
  * failing write cannot wipe the tab (there is no clear-everything step).
+ *
+ * Stale-save protection: with a `stamp` (the one getAgenda / regenerateAgenda / the last save
+ * returned), the week's stamp is recomputed from the sheet inside the lock before anything is
+ * deleted; when they differ (a Claude routine or another tab wrote the week since) nothing is
+ * written and the user error AGENDA_CONFLICT_MESSAGE is thrown. Without one it saves as before.
+ * The returned stamp is the week's as written, re-read under the same lock. The routines write through the Sheets connector
+ * without the lock, so when the re-read finds more (or fewer) rows than were written, the returned stamp is 'changed': it
+ * matches no week, and the next save from that page is refused until the agenda is reloaded (and shows the routine's rows).
  */
 function saveAgenda_(input) {
   const inp = input || {};
   const win = agendaWindow(validDateOrBlank_(inp.meetingDate, 'Meeting date') || resolveMeetingDate_(inp, readConfig()));
   const rows = normaliseSections_(inp.sections);
   const now = new Date();
+  const draftText = formatDate(now, 'yyyy-MM-dd HH:mm') + ' ' + AGENDA_DRAFT_TAG;
   const weekOfCell = dateCell(win.weekOf);
   const C = COLUMN.AGENDA;
   const cols = HEADERS.Agenda.length;
@@ -299,16 +367,24 @@ function saveAgenda_(input) {
     cells[C.detail] = r.detail;
     cells[C.link] = r.link;
     cells[C.taskId] = r.taskId;
-    cells[C.generated] = now;
+    cells[C.generated] = agendaGeneratedCell_(r.generated, now, draftText);
     return cells.map(guardCell); // item/detail are user text: never a formula
   });
+  let stamp = '';
   withLock(() => {
+    if (typeof inp.stamp === 'string' && agendaStamp_(agendaWeekRows_(win.weekOf)) !== inp.stamp) {
+      log('saveAgenda', 'WARN', 'week of ' + win.weekOf + ': not saved, the week changed since it was opened');
+      throw userError(AGENDA_CONFLICT_MESSAGE);
+    }
     const sheet = getTab(TABS.AGENDA);
     deleteAgendaWeek_(sheet, win.weekOf);
     appendRows(TABS.AGENDA, newRows);
+    const after = agendaWeekRows_(win.weekOf);
+    stamp = after.length === newRows.length ? agendaStamp_(after) : 'changed'; // a routine wrote the week mid-save: the next save must reload first
+    if (stamp === 'changed') log('saveAgenda', 'WARN', 'week of ' + win.weekOf + ': changed during the save (' + newRows.length + ' row(s) written, ' + after.length + ' read back)');
   });
   log('saveAgenda', 'INFO', 'week of ' + win.weekOf + ': ' + rows.length + ' row(s) saved');
-  return { ok: true, rows: rows.length };
+  return { ok: true, rows: rows.length, stamp: stamp };
 }
 
 /** Deletes the Agenda rows whose Week of equals weekOf (as Date or yyyy-MM-dd text), bottom-up in contiguous runs. */

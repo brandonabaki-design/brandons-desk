@@ -379,33 +379,146 @@ async function runViewport(browser, url, vp, opts) {
     await gotoPage(page, 'today');
     check(await page.locator('#col-work .task', { hasText: 'Share the rubric with the team' }).count() === 1, tag + ': imported task appears on Today');
 
-    // ---- Agenda: saved week, edit, save, regenerate, copy, download ----
+    // ---- Agenda (docs/AGENDA.md section 2): every section editable, generated kept and sent back, the stamp, the conflict ----
+    const REVIEW = '2026-10-05 14:46 claude-review', MINE = '2026-10-06 18:02:11';
+    const agendaCall = (name) => page.evaluate((n) => window.__mock.calls.filter((c) => c.name === n).slice(-1)[0] || null, name);
+    const agendaCalls = (name) => page.evaluate((n) => window.__mock.calls.filter((c) => c.name === n).length, name);
+    const sectionItems = (name) => page.evaluate((n) => Array.from(document.querySelectorAll('[data-section="' + n + '"] .arow')).map((r) => r.querySelector('textarea, input').value), name);
     await gotoPage(page, 'agenda');
     check((await page.inputValue('#agenda-date')) === '2026-10-13', tag + ': agenda defaults to next Tuesday');
     check((await page.textContent('#agenda-state')).trim() === 'Saved', tag + ': saved agenda flagged');
     check(/With Dr Sarah Mitchell/.test(await page.textContent('#agenda-director')), tag + ': director name shown');
+    check((await page.textContent('#agenda-window')) === '', tag + ': a saved agenda shows no window line (it may cover more than the week before)');
+    const secInfo = await page.evaluate(() => Array.from(document.querySelectorAll('.agenda-section')).map((sec) => ({
+      name: sec.getAttribute('data-section'), labels: Array.from(new Set(Array.from(sec.querySelectorAll('.arow textarea, .arow input')).map((e) => e.getAttribute('aria-label')))),
+      add: (sec.querySelector('button.add') || {}).textContent, open: Array.from(sec.querySelectorAll('.arow a')).map((x) => [x.textContent, x.getAttribute('href'), x.getAttribute('target'), x.getAttribute('rel')]),
+      buttons: sec.querySelectorAll('.arow button[aria-label="Move up"]').length + '/' + sec.querySelectorAll('.arow button[aria-label="Remove"]').length + '/' + sec.querySelectorAll('.arow').length })));
+    check(JSON.stringify(secInfo.map((x) => [x.name, x.labels, x.add])) === JSON.stringify([['Done', ['Done item', 'Detail'], '+ Add item'], ['In progress', ['In progress item', 'Detail'], '+ Add item'],
+      ['Questions', ['Question', 'Detail'], '+ Add question'], ['Documents', ['Document name', 'Link'], '+ Add document'], ['Notes', ['Note', 'Detail'], '+ Add note']]),
+      tag + ': every section is editable (Item textarea + Detail; Documents name + link) with its own Add button ' + JSON.stringify(secInfo.map((x) => [x.name, x.labels, x.add])));
+    check(secInfo.every((x) => x.buttons.split('/')[0] === x.buttons.split('/')[2] && x.buttons.split('/')[1] === x.buttons.split('/')[2]), tag + ': every row can be moved and removed ' + JSON.stringify(secInfo.map((x) => x.buttons)));
+    check(JSON.stringify(secInfo[0].open) === JSON.stringify([['Open ↗', 'https://chat.google.com/room/AAAAmentors', '_blank', 'noopener']]) && secInfo[1].open.length === 2 &&
+      secInfo[3].open.length === 0, tag + ': a non-Documents row with a link keeps its Open ↗ link ' + JSON.stringify(secInfo.map((x) => x.open.length)));
+    check((await tooSmall(page, '#agenda-sections .arow a', 40)).length === 0, tag + ': the Open ↗ links are 40 px tap targets');
     check(await page.locator('[data-section="Questions"] .arow').count() === 4, tag + ': 4 saved questions');
+    const stamp0 = await page.evaluate(() => window.__mock.agendaStamp('2026-10-12'));
+    await page.locator('[data-section="Done"] .arow').nth(1).locator('textarea').fill('Finish the MYP unit reflections with Lina');
     await page.locator('[data-section="Questions"] button.add').click();
     await page.locator('[data-section="Questions"] .arow').last().locator('textarea').first().fill('Can we fund two more micro:bit kits this term?');
     await page.locator('[data-section="Done"] .arow').first().locator('button[aria-label="Remove"]').click();
     await page.locator('[data-section="Questions"] .arow').last().locator('button[aria-label="Move up"]').click();
+    await page.locator('[data-section="Done"] button.add').click();
+    check((await page.evaluate(() => document.activeElement && document.activeElement.getAttribute('aria-label'))) === 'Done item', tag + ': + Add item focuses the new Done item');
+    await page.keyboard.type('Hub launch date agreed');
     await shot(page, tag + '-agenda-edited');
     await page.click('#agenda-save');
-    check(await waitToast(page, 'Agenda saved (13 rows)'), tag + ': save toast with row count');
+    check(await waitToast(page, 'Agenda saved (14 rows)'), tag + ': save toast with row count');
+    const savePayload = (await agendaCall('saveAgenda')).payload;
+    check(savePayload.stamp === stamp0, tag + ': saveAgenda sends the stamp the agenda was loaded with');
+    check(JSON.stringify(savePayload.sections.Done.map((r) => [r.item, r.generated])) === JSON.stringify([['Finish the MYP unit reflections with Lina', ''], ['Share workshop photos with comms team', MINE], ['Hub launch date agreed', '']]) &&
+      savePayload.sections['In progress'].every((r) => r.generated === REVIEW) && JSON.stringify(savePayload.sections.Questions.map((r) => r.generated)) === JSON.stringify([REVIEW, REVIEW, MINE, '', REVIEW]),
+      tag + ': generated goes back as loaded, cleared on the edited and added rows, untouched by moves and removals ' + JSON.stringify(savePayload.sections.Done.map((r) => r.generated)));
     const saved = await page.evaluate(() => window.__mock.state.agendaStore['2026-10-12']);
-    check(saved.Done.length === 2 && saved.Questions.length === 5 && saved.Questions[3].item === 'Can we fund two more micro:bit kits this term?' && saved.Questions[3].order === 4, tag + ': saveAgenda payload has the edited rows in order');
+    check(saved.Done.length === 3 && saved.Questions.length === 5 && saved.Questions[3].item === 'Can we fund two more micro:bit kits this term?' && saved.Questions[3].order === 4 &&
+      saved['In progress'][0].generated === REVIEW && saved.Done[0].generated === '2026-10-10 09:30:00', tag + ': the untouched review lines keep their tag; the edited line is Brandon\'s');
+    // the page keeps the stamp the save returned: a second save needs no reload
+    await clearToasts(page);
+    const stamp1 = await page.evaluate(() => window.__mock.agendaStamp('2026-10-12'));
+    await page.locator('[data-section="Notes"] .arow').first().locator('input[aria-label="Detail"]').fill('Numbers in the board pack');
+    await page.locator('[data-section="In progress"] .arow').nth(0).locator('input[aria-label="Detail"]').fill('AI Learning Hub · Sarah to read it first');
+    await page.locator('[data-section="Documents"] .arow').nth(0).locator('input[aria-label="Link"]').fill('https://docs.google.com/document/d/1AbCdEf/edit ');
+    await page.click('#agenda-save');
+    check(await waitToast(page, 'Agenda saved (14 rows)') && stamp1 !== stamp0 && (await agendaCall('saveAgenda')).payload.stamp === stamp1, tag + ': a second save sends the stamp the first save returned');
+    check(!/changed since you opened it/.test(await toastText(page)) && (await page.evaluate(() => window.__mock.state.agendaStore['2026-10-12'].Notes[0].detail)) === 'Numbers in the board pack',
+      tag + ': the second save used the stamp of the first (no conflict with its own save)');
+    const save2 = (await agendaCall('saveAgenda')).payload.sections;
+    check(save2['In progress'][0].generated === '' && save2['In progress'][0].detail === 'AI Learning Hub · Sarah to read it first' && save2['In progress'][1].generated === REVIEW &&
+      save2.Documents[0].generated === '' && save2.Documents[0].link === 'https://docs.google.com/document/d/1AbCdEf/edit' && save2.Documents[1].generated === MINE,
+      tag + ': editing only a Detail, or a document\'s link, makes that line Brandon\'s (generated cleared); the rows next to it keep theirs ' + JSON.stringify([save2['In progress'].map((r) => r.generated), save2.Documents.map((r) => r.generated)]));
+    await clearToasts(page);
+    // a save on its way: coming back to the page does not reload over it, and edits typed meanwhile stay on the page, unsaved
+    await page.evaluate(() => { window.__mock.latency = 1000; });
+    const readsSaving = await agendaCalls('getAgenda');
+    await page.click('#agenda-save');
+    await gotoPage(page, 'today');
+    await gotoPage(page, 'agenda');
+    check((await agendaCalls('getAgenda')) === readsSaving, tag + ': coming back while a save is on its way does not re-read the agenda');
+    check(await waitToast(page, 'Agenda saved (14 rows)') && (await page.textContent('#agenda-state')).trim() === 'Saved', tag + ': the save lands on the page');
+    await clearToasts(page);
+    await page.click('#agenda-save');
+    await page.locator('[data-section="Notes"] .arow').first().locator('input[aria-label="Detail"]').fill('Typed while saving');
+    check(await waitToast(page, 'Agenda saved (14 rows)'), tag + ': the save with an edit typed meanwhile lands');
+    await page.evaluate(() => { window.__mock.latency = 30; });
+    await clearToasts(page);
+    const readsTyped = await agendaCalls('getAgenda');
+    await gotoPage(page, 'today');
+    await gotoPage(page, 'agenda');
+    check((await page.locator('[data-section="Notes"] .arow').first().locator('input[aria-label="Detail"]').inputValue()) === 'Typed while saving' && (await agendaCalls('getAgenda')) === readsTyped &&
+      (await page.evaluate(() => window.__mock.state.agendaStore['2026-10-12'].Notes[0].detail)) === 'Numbers in the board pack', tag + ': an edit typed while saving stays on the page and counts as unsaved (no re-read on the way back)');
+    await page.click('#agenda-save');
+    check(await waitToast(page, 'Agenda saved (14 rows)') && (await agendaCall('saveAgenda')).payload.sections.Notes[0].detail === 'Typed while saving', tag + ': the next save carries the edit typed while saving');
     await clearToasts(page);
     await page.click('#agenda-copy');
     check(await waitToast(page, 'Agenda copied as text'), tag + ': copy-as-text toast');
     const copied = await page.evaluate(() => window.__copied || '');
-    check(/^Director meeting agenda — Tuesday 13 October 2026\nWindow: Tuesday 6 October 2026 to Monday 12 October 2026\nDirector: Dr Sarah Mitchell\n\nDONE\n1\. /.test(copied), tag + ': copied agenda text');
+    check(/^Director meeting agenda — Tuesday 13 October 2026\nDirector: Dr Sarah Mitchell\n\nDONE\n1\. Finish the MYP unit reflections with Lina/.test(copied) && copied.indexOf('Window') < 0, tag + ': copied agenda text (no window line once saved)');
     await clearToasts(page);
     await downloadCheck(page, '#agenda-download', 'agenda-2026-10-13', opts.xlsx, tag, 'Agenda', (ws) =>
-      ws.A5 && ws.A5.v === 'Section' && Object.keys(ws).some((k) => /^D\d+$/.test(k) && ws[k].l && ws[k].l.Target === 'https://docs.google.com/document/d/1AbCdEf/edit'));
-    await page.click('#agenda-regenerate');
-    check(await waitToast(page, 'Draft regenerated'), tag + ': regenerate toast');
-    check((await page.textContent('#agenda-state')).trim() === 'Draft' && await page.locator('[data-section="Questions"] .arow').count() === 5, tag + ': regenerate keeps saved questions, flags draft');
+      ws.A4 && ws.A4.v === 'Section' && !(ws.A2 && /^Window/.test(ws.A2.v)) && Object.keys(ws).some((k) => /^D\d+$/.test(k) && ws[k].l && ws[k].l.Target === 'https://docs.google.com/document/d/1AbCdEf/edit'));
+
+    // ---- the week changed in the sheet since it was opened (the weekly review): the save is refused, Reload agenda shows the new rows ----
+    await page.evaluate(() => {
+      const w = window.__mock.state.agendaStore['2026-10-12'];
+      w.Questions.splice(w.Questions.length - 1, 0, { order: 9, item: 'Can the Hub budget move to January?', detail: 'From the weekly review', link: '', taskId: '', generated: '2026-10-12 14:46 claude-review' });
+    });
+    await page.locator('[data-section="Questions"] .arow').first().locator('textarea').fill('An edit made on a stale agenda');
+    await page.click('#agenda-save');
+    check(await waitToast(page, "This agenda changed since you opened it (Claude's weekly review or another tab saved it). Copy any edits you want to keep, then reload the agenda."),
+      tag + ': a stale save is refused with the conflict message');
+    check(await page.locator('.toast.error .act', { hasText: 'Reload agenda' }).count() === 1, tag + ': the error toast offers Reload agenda');
+    check((await sectionItems('Questions'))[0] === 'An edit made on a stale agenda' && (await page.evaluate(() => window.__mock.state.agendaStore['2026-10-12'].Questions.length)) === 6,
+      tag + ': nothing was written and the edits stay on the page to copy');
+    await page.waitForTimeout(300); // the toast's rise animation
+    await shot(page, tag + '-agenda-conflict');
+    await page.locator('.toast .act', { hasText: 'Reload agenda' }).click();
+    await page.waitForFunction(() => Array.from(document.querySelectorAll('[data-section="Questions"] textarea')).some((t) => t.value === 'Can the Hub budget move to January?'));
+    const reloadedQ = await sectionItems('Questions');
+    check(reloadedQ.length === 6 && reloadedQ.indexOf('An edit made on a stale agenda') < 0 && (await page.textContent('#agenda-state')).trim() === 'Saved', tag + ': Reload agenda drops the edits and shows the new rows');
     await clearToasts(page);
+
+    // ---- opening the page reads the agenda again (another tab saved meanwhile), unless there are unsaved edits ----
+    await gotoPage(page, 'today');
+    await page.evaluate(() => { window.__mock.state.agendaStore['2026-10-12'].Notes.push({ order: 2, item: 'Added from another tab', detail: '', link: '', taskId: '', generated: '2026-10-10 09:29:00' }); });
+    await gotoPage(page, 'agenda');
+    check(JSON.stringify(await sectionItems('Notes')) === JSON.stringify(['Sarah wants the Hub numbers before the board meeting on Wednesday.', 'Added from another tab']), tag + ': entering the Agenda page re-reads it');
+    await page.locator('[data-section="Notes"] .arow').last().locator('textarea').fill('My unsaved note');
+    const readsBefore = await agendaCalls('getAgenda');
+    await gotoPage(page, 'today');
+    await gotoPage(page, 'agenda');
+    check((await agendaCalls('getAgenda')) === readsBefore && (await sectionItems('Notes'))[1] === 'My unsaved note', tag + ': with unsaved edits, coming back keeps them (no re-read)');
+
+    // ---- Regenerate: guarded by the unsaved edits, then a draft (with its window) that itself counts as unsaved ----
+    await page.click('#agenda-regenerate');
+    check(await waitToast(page, 'unsaved agenda edits'), tag + ': Regenerate with unsaved edits asks first');
+    await page.evaluate(() => { window.__mock.latency = 1000; });
+    const readsRegenerating = await agendaCalls('getAgenda');
+    await page.locator('.toast .act', { hasText: 'Discard edits' }).click();
+    await gotoPage(page, 'today');
+    await gotoPage(page, 'agenda');
+    check((await agendaCalls('getAgenda')) === readsRegenerating, tag + ': coming back while Regenerate is on its way does not reload over it');
+    check(await waitToast(page, 'Draft regenerated'), tag + ': regenerate toast');
+    await page.evaluate(() => { window.__mock.latency = 30; });
+    check((await page.textContent('#agenda-state')).trim() === 'Draft' && await page.locator('[data-section="Questions"] .arow').count() === 6 && (await page.textContent('#agenda-window')) === 'Tue 6 Oct – Mon 12 Oct',
+      tag + ': regenerate keeps saved questions, flags draft and shows the window');
+    await clearToasts(page);
+    await page.click('#agenda-copy');
+    check(await waitToast(page, 'Agenda copied as text') && /^Director meeting agenda — Tuesday 13 October 2026\nWindow: Tuesday 6 October 2026 to Monday 12 October 2026\n/.test(await page.evaluate(() => window.__copied || '')),
+      tag + ': a draft\'s text carries its window line');
+    await clearToasts(page);
+    const readsRegen = await agendaCalls('getAgenda');
+    await gotoPage(page, 'today');
+    await gotoPage(page, 'agenda');
+    check((await agendaCalls('getAgenda')) === readsRegen && (await page.textContent('#agenda-state')).trim() === 'Draft', tag + ': a regenerated draft counts as unsaved: coming back keeps it');
     // Unsaved edits are guarded: changing the week first asks, then loads once the edits are discarded.
     await page.locator('[data-section="Questions"] .arow').first().locator('textarea').fill('An unsaved edit');
     await page.fill('#agenda-date', '2026-10-20');
@@ -694,8 +807,26 @@ async function deskChecks(page, url, vp, opts) {
     tag + ': tasks added on the Desk are on the Tasks page');
   await gotoPage(page, 'desk');
 
-  // ---- director agenda: open per the data, remembers a toggle, copy as text, download .xlsx (or the CSV fallback) ----
-  check(await page.locator('#desk-agenda[open] .dk-ag > div').count() === 3, tag + ': agenda open (agenda.open) with three sections');
+  // ---- director agenda (docs/AGENDA.md section 2): agenda.meeting is saved, so the block shows the saved agenda ----
+  await page.waitForSelector('#desk-agenda-body[data-source="saved"]');
+  const agView = () => page.evaluate(() => ({
+    source: document.getElementById('desk-agenda-body').getAttribute('data-source'), title: document.querySelector('#desk-agenda-summary h2').textContent,
+    heads: Array.from(document.querySelectorAll('#desk-agenda-body h3')).map((x) => x.textContent),
+    counts: Array.from(document.querySelectorAll('#desk-agenda-body > div')).map((x) => x.querySelectorAll('li').length),
+    docs: Array.from(document.querySelectorAll('#desk-agenda-body a.dk-lnk')).map((x) => [x.textContent, x.getAttribute('href'), x.getAttribute('target'), x.getAttribute('rel')]),
+    text: document.getElementById('desk-agenda-body').textContent, full: !!document.getElementById('desk-agenda-full')
+  }));
+  let ag = await agView();
+  check(ag.title === 'Tue 13 Oct · Director' && JSON.stringify(ag.heads) === JSON.stringify(['Done', 'In progress', 'Decisions & questions', 'Documents']) && JSON.stringify(ag.counts) === '[3,3,6,2]',
+    tag + ': the agenda block shows the saved agenda of its meeting (title from the Desk JSON) ' + JSON.stringify([ag.heads, ag.counts]));
+  check(JSON.stringify(ag.docs) === JSON.stringify([['Review Grade 10 Design unit plan draft', 'https://docs.google.com/document/d/1AbCdEf/edit', '_blank', 'noopener'],
+    ['Set up Chat space for Hub mentors', 'https://chat.google.com/room/AAAAmentors', '_blank', 'noopener']]), tag + ': Documents are link pills ' + JSON.stringify(ag.docs));
+  check(ag.text.indexOf('Finish the MYP unit reflections with Lina') >= 0 && ag.text.indexOf('Sarah wants the Hub numbers') < 0 && ag.text.indexOf('Added from another tab') < 0, tag + ': saved rows shown; Notes stay on the Agenda page');
+  check(await page.locator('#desk-agenda[open]').count() === 1, tag + ': agenda open (agenda.open)');
+  const fullHit = await page.evaluate(() => { const a = document.getElementById('desk-agenda-full'); a.scrollIntoView({ block: 'center' }); const r = a.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    return document.elementFromPoint(x, y - 18) === a && document.elementFromPoint(x, y + 18) === a; });
+  const docHit = await page.evaluate(() => { const a = document.querySelector('#desk-agenda-body a.dk-lnk'); a.scrollIntoView({ block: 'center' }); const r = a.getBoundingClientRect(); return document.elementFromPoint(r.left + r.width / 2, r.top - 4) === a; });
+  check(fullHit && docHit, tag + ': Full agenda and the document pills have a 40 px hit area');
   await page.click('#desk-agenda-summary');
   await page.click('[data-key="i:rubric"] input[type="checkbox"]'); // any re-render
   await deskIdle(page);
@@ -704,6 +835,88 @@ async function deskChecks(page, url, vp, opts) {
   await deskIdle(page);
   await page.click('#desk-agenda-summary');
   await clearToasts(page);
+  await page.evaluate(() => document.getElementById('desk-agenda').scrollIntoView({ block: 'start' }));
+  await shot(page, tag + '-desk-agenda-saved');
+  await page.click('#desk-agenda-copy');
+  check(await waitToast(page, 'Agenda copied as text'), tag + ': agenda copy toast');
+  const savedCopied = await page.evaluate(() => window.__copied || '');
+  check(/^Director meeting agenda — Tuesday 13 October 2026\nDirector: Dr Sarah Mitchell\n\nDONE\n1\. Finish the MYP unit reflections with Lina/.test(savedCopied) &&
+    savedCopied.indexOf('\nDOCUMENTS\n1. Review Grade 10 Design unit plan draft — The rubric to agree https://docs.google.com/document/d/1AbCdEf/edit') >= 0 &&
+    savedCopied.indexOf('\nNOTES\n1. Sarah wants the Hub numbers') >= 0 && savedCopied.indexOf('Window') < 0, tag + ': Copy uses the saved agenda as the Agenda page does (documents, links, Notes)\n' + savedCopied);
+  await clearToasts(page);
+  await downloadCheck(page, '#desk-agenda-download', 'agenda-2026-10-13', opts.xlsx, tag + '-desk', 'Agenda', (ws) =>
+    ws.A1 && ws.A1.v === 'Director meeting agenda — Tuesday 13 October 2026' && ws.A2.v === 'Director: Dr Sarah Mitchell' && ws.A4.v === 'Section' && ws.D4.v === 'Link' &&
+    Object.keys(ws).some((k) => /^A\d+$/.test(k) && ws[k].v === 'Notes') && Object.keys(ws).some((k) => /^D\d+$/.test(k) && ws[k].l && ws[k].l.Target === 'https://chat.google.com/room/AAAAmentors'));
+  // ---- Full agenda: the Agenda page at the Desk's meeting date ----
+  await page.click('#desk-agenda-full');
+  await page.waitForSelector('#page-agenda:not([hidden])');
+  await page.waitForFunction(() => document.getElementById('agenda-date').value === '2026-10-13' && document.querySelectorAll('[data-section="Done"] .arow').length > 0);
+  check((await page.textContent('#agenda-state')).trim() === 'Saved' && /active/.test(await page.getAttribute('#tabs a[data-page="agenda"]', 'class')), tag + ': Full agenda opens the Agenda page at 2026-10-13 (it showed 2026-10-20)');
+  check((await page.evaluate(() => document.activeElement && document.activeElement.getAttribute('data-page'))) === 'agenda', tag + ': keyboard focus moves to the Agenda tab (the link\'s page is hidden)');
+  // with unsaved edits of another week, the page opens on them and asks before loading the meeting's week
+  await page.fill('#agenda-date', '2026-10-20');
+  await page.dispatchEvent('#agenda-date', 'change');
+  await page.waitForFunction(() => document.getElementById('agenda-state').textContent.trim() === 'Draft');
+  await page.locator('[data-section="Notes"] button.add').click();
+  await page.locator('[data-section="Notes"] .arow').last().locator('textarea').fill('Next week, unsaved');
+  await gotoPage(page, 'desk');
+  await page.click('#desk-agenda-full');
+  await page.waitForSelector('#page-agenda:not([hidden])');
+  check(await waitToast(page, 'unsaved agenda edits') && (await page.inputValue('#agenda-date')) === '2026-10-20' && (await page.locator('[data-section="Notes"] .arow textarea').last().inputValue()) === 'Next week, unsaved',
+    tag + ': Full agenda with unsaved edits of another week keeps them and asks first');
+  await page.locator('.toast .act', { hasText: 'Discard edits' }).click();
+  await page.waitForFunction(() => document.getElementById('agenda-date').value === '2026-10-13' && document.getElementById('agenda-state').textContent.trim() === 'Saved');
+  ok(tag + ': Discard edits loads the meeting\'s week');
+  await clearToasts(page);
+  // Full agenda on the week being edited keeps the edits, and its date is not kept for a later visit: the week picked since wins
+  const notesDetail = () => page.locator('[data-section="Notes"] .arow').first().locator('input[aria-label="Detail"]');
+  await notesDetail().fill('Same week, unsaved');
+  await gotoPage(page, 'desk');
+  await page.click('#desk-agenda-full');
+  await page.waitForSelector('#page-agenda:not([hidden])');
+  check((await page.inputValue('#agenda-date')) === '2026-10-13' && (await notesDetail().inputValue()) === 'Same week, unsaved', tag + ': Full agenda on the week being edited keeps the edits');
+  await page.click('#agenda-save');
+  check(await waitToast(page, 'Agenda saved'), tag + ': the edited week saves');
+  await clearToasts(page);
+  await page.fill('#agenda-date', '2026-10-20');
+  await page.dispatchEvent('#agenda-date', 'change');
+  await page.waitForFunction(() => document.getElementById('agenda-state').textContent.trim() === 'Draft');
+  await gotoPage(page, 'today');
+  await gotoPage(page, 'agenda');
+  check((await page.inputValue('#agenda-date')) === '2026-10-20' && (await page.textContent('#agenda-state')).trim() === 'Draft', tag + ': a later visit opens the week picked since, not the earlier Full agenda date');
+  // Full agenda for another week while a save is on its way opens that week at once; the save still lands
+  await page.evaluate(() => { window.__mock.latency = 1000; });
+  await page.click('#agenda-save');
+  await gotoPage(page, 'desk');
+  await page.click('#desk-agenda-full');
+  await page.waitForSelector('#page-agenda:not([hidden])');
+  const savedMeanwhile = await waitToast(page, 'Agenda saved');
+  const openedAtOnce = await page.waitForFunction(() => document.getElementById('agenda-date').value === '2026-10-13' && document.getElementById('agenda-state').textContent.trim() === 'Saved' &&
+    document.querySelectorAll('[data-section="Done"] .arow').length > 0, null, { timeout: 4000 }).then(() => true, () => false);
+  await page.evaluate(() => { window.__mock.latency = 30; });
+  check(savedMeanwhile && openedAtOnce && (await page.evaluate(() => !!window.__mock.state.agendaStore['2026-10-19'])), tag + ': Full agenda during a save of another week opens the meeting\'s week; the save is kept');
+  await clearToasts(page);
+  // ---- the saved agenda cannot be read (getAgenda fails): the block uses the Desk JSON, and the next visit shows the saved one again ----
+  await gotoPage(page, 'today');
+  await page.evaluate(() => window.__mock.failNext('getAgenda', 'Sheet is locked, try again'));
+  await gotoPage(page, 'desk');
+  await page.waitForSelector('#desk-agenda-body[data-source="desk"]');
+  ag = await agView();
+  check(JSON.stringify(ag.heads) === JSON.stringify(['Done', 'In progress', 'Decisions & questions']) && JSON.stringify(ag.counts) === '[3,3,3]' && ag.full, tag + ': a failed read falls back to the Desk JSON\'s agenda');
+  await gotoPage(page, 'today');
+  await gotoPage(page, 'desk');
+  await page.waitForSelector('#desk-agenda-body[data-source="saved"]');
+  ok(tag + ': the next visit shows the saved agenda again');
+  // ---- no saved agenda for the meeting: the block (and Copy / Download) fall back to the Desk JSON; read again on each visit ----
+  await gotoPage(page, 'today');
+  await page.evaluate(() => { delete window.__mock.state.agendaStore['2026-10-12']; });
+  const deskReads = await page.evaluate(() => window.__mock.calls.filter((c) => c.name === 'getDesk').length);
+  await gotoPage(page, 'desk');
+  await page.waitForSelector('#desk-agenda-body[data-source="desk"]');
+  ag = await agView();
+  check(JSON.stringify(ag.heads) === JSON.stringify(['Done', 'In progress', 'Decisions & questions']) && JSON.stringify(ag.counts) === '[3,3,3]' && ag.docs.length === 0 && ag.full &&
+    (await page.evaluate(() => window.__mock.calls.filter((c) => c.name === 'getDesk').length)) === deskReads, tag + ': not saved → the Desk JSON\'s agenda, re-read on the visit without re-reading the Desk');
+  check(JSON.stringify((await lastCall(page, 'getAgenda')).payload) === JSON.stringify({ meetingDate: '2026-10-13' }), tag + ': the Desk asks getAgenda for agenda.meeting');
   await page.click('#desk-agenda-copy');
   check(await waitToast(page, 'Agenda copied as text'), tag + ': agenda copy toast');
   const agendaCopied = await page.evaluate(() => window.__copied || '');

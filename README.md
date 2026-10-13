@@ -1,15 +1,15 @@
 # Brandon's Desk
 
-Brandon's Desk is a private to-do tracker that lives in one Google Sheet, with a small web app on top that works on a phone and a laptop. Every school morning it reads work Gmail and Google Chat into an Inbox tab so nothing asked of you gets lost, and the Claude routine that builds your daily Desk syncs its items, ticks and Andy's agenda into the sheet, which gives you a weekly agenda for the Tuesday director meeting (downloadable as .xlsx) and material for the AI Learning Hub newsletter. Nothing is ever deleted: a task stays on one row until it is Done or Dropped.
+Brandon's Desk is a private to-do tracker that lives in one Google Sheet, with a small web app on top that works on a phone and a laptop. Every school morning it reads work Gmail and Google Chat into an Inbox tab so nothing asked of you gets lost, the Claude routine that builds your daily Desk syncs its items and ticks into the sheet, and a weekly Claude review writes Andy's agenda next to your own lines, which gives you a weekly agenda for the Tuesday director meeting (downloadable as .xlsx) and material for the AI Learning Hub newsletter. Nothing is ever deleted: a task stays on one row until it is Done or Dropped.
 
 - The sheet: https://docs.google.com/spreadsheets/d/1012Dbz6HB4dXD12Q5ClKm9LytSqgLHDIVz5_n6bHZ6w/edit (owner `brandon.abaki@gmail.com`, editor `bbaki@aisa.sch.ae`). Tabs: Work, Personal, Inbox, Agenda, Config, Log.
 - The web app: an Apps Script project owned by the **work** account, deployed "Execute as me / Only myself". Its `/exec` URL is yours after step 5 below.
-- The docs: `docs/SPEC.md` is the contract (schema, server functions, rules, pages); `docs/research-notes.md` holds the verified Apps Script / clasp / Gmail / Chat facts the code relies on; `docs/routines.md` explains how the Desk routine and the web app share the sheet (`docs/routine-desk-prompt.md` is the routine's full instructions); `docs/UI.md` describes the web page.
+- The docs: `docs/SPEC.md` is the contract (schema, server functions, rules, pages); `docs/research-notes.md` holds the verified Apps Script / clasp / Gmail / Chat facts the code relies on; `docs/routines.md` explains how the two Claude routines and the web app share the sheet (`docs/routine-desk-prompt.md` and `docs/routine-agenda-prompt.md` are their full instructions); `docs/AGENDA.md` is the contract for the Agenda tab they share with you; `docs/DESK.md` covers the Desk page; `docs/UI.md` describes the web page.
 
 ```
 apps-script/   the Apps Script project (pushed with clasp): *.gs server code, Index.html + Styles.html + App.html
 tests/         Node test harness, a mock of the Apps Script services, fixtures, browser checks
-docs/          SPEC.md, research-notes.md, routines.md, UI.md
+docs/          SPEC.md, AGENDA.md, DESK.md, research-notes.md, routines.md (+ the two routine prompts), UI.md
 ```
 
 ## Setup, in order
@@ -125,7 +125,7 @@ Chat needs no extra setup: the manifest's Chat advanced service switches the API
 
 ## Everyday use
 
-- **The pages.** Desk (the home page: the morning build's Desk in the same layout as the routine's page; ticks and the add box save straight to the Work/Personal tabs), Tasks (was Today: quick-add, tick off, edit), Inbox (promote or ignore captured mail and chat, *Run capture now*), Import (paste a list or choose an .html/.txt file), Agenda (next Tuesday's draft, edit, Save, Download .xlsx, Copy as text), Newsletter (Copy as Markdown, Download .xlsx), History (Done/Dropped, reopen).
+- **The pages.** Desk (the home page: the morning build's Desk in the same layout as the routine's page; ticks and the add box save straight to the Work/Personal tabs), Tasks (was Today: quick-add, tick off, edit), Inbox (promote or ignore captured mail and chat, *Run capture now*), Import (paste a list or choose an .html/.txt file), Agenda (Andy's agenda for the next meeting: the routines' lines and yours, every section editable, Save, Download .xlsx, Copy as text; it re-reads the sheet each time you open it, and a save is refused with *Reload agenda* if a routine changed the week after you opened it), Newsletter (Copy as Markdown, Download .xlsx), History (Done/Dropped, reopen).
 - **Changing Config.** Edit the *Value* column of the Config tab in the sheet. The keys and the *Notes* column are written by `setup()`; the app reads the tab on every request (12 rows, nothing cached between requests), so a change applies to the next click. Keys: `ALLOWED_EMAILS`, `TIMEZONE`, `MEETING_DAY`, `GMAIL_QUERY`, `GMAIL_LOOKBACK_DAYS`, `CHAT_ENABLED`, `CHAT_LOOKBACK_DAYS`, `NEWSLETTER_KEYWORDS`, `DEFAULT_QUICKADD_CATEGORY`, `PROJECTS`, `DIRECTOR_NAME`. Comma-separated where plural. `TIMEZONE` must be an IANA id such as `Asia/Dubai`; anything else falls back to Asia/Dubai with a WARN in the Log.
 - **Running capture by hand.** Inbox page → **Run capture now** (the toast shows how many Gmail threads and Chat conversations it added, and the Chat mode: `api`, `email` or `off`; each Chat conversation is one Inbox row holding its new messages, and one-word replies, greetings and phone numbers are left out), or in the editor run `runCaptureNow`. The scheduled `captureInbox` skips Saturdays and Sundays; *Run capture now* always runs.
 - **Releasing a code change.** `npm test`, then step 6.
@@ -163,6 +163,11 @@ The browser checks need a Chromium: after `npm install`, run `npx playwright ins
 
 ## Claude routines
 
-The Desk morning build (weekdays 06:45 Dubai, or the Desk's "Rebuild now" button) builds your daily Desk and keeps this sheet in step with it: new items appear in the web app, ticks flow both ways, and Andy's agenda lands in the Agenda tab. See `docs/routines.md`; nothing needs setting up in the Routines page.
+Two Claude routines keep the sheet in step (`docs/routines.md`):
+
+- **Brandon's Desk morning build** (weekdays 06:45 Dubai, or the Desk's "Rebuild now" button) builds your daily Desk and syncs it with this sheet: new items appear in the web app, ticks flow both ways, and on Monday builds (and the meeting-day build before the meeting) it writes a first agenda for Andy unless that week's agenda is already settled. It exists already.
+- **Weekly agenda review** (Mondays 14:45 Dubai, or started by hand) reads the week's work and writes Andy's agenda for the next meeting into the Agenda tab. It never removes or rewords your own lines, does not write the Desk tab and sends no push notification. Create it once in the claude.ai Routines page as `docs/routines.md` (*Setting up the weekly review*) describes.
+
+Every Agenda row records who wrote it in its Generated column: `… claude-desk`, `… claude-review`, `… web-draft` (the web app's draft saved unchanged), or a date-time for your own lines; editing a line on the Agenda page makes it yours. `docs/AGENDA.md` is the full contract. The Desk's agenda block shows the saved agenda of its meeting as soon as there is one, with the same Copy and Download as the Agenda page and a *Full agenda* link.
 
 The web app's Desk page reads the **Desk** tab, which the morning build rewrites on every run (`docs/DESK.md`). After the first release that includes the Desk page (`clasp push -f` and step 6), open the web app once, or run `setup` in the editor, so the Desk tab exists before the next 06:45 build writes to it. Until that build runs, the Desk page shows a "No Desk yet" panel with a link to the routine's Desk page, and its add box already works.

@@ -1,10 +1,10 @@
 # Brandon's Desk
 
-Brandon's Desk is a private to-do tracker that lives in one Google Sheet, with a small web app on top that works on a phone and a laptop. Every school morning it reads work Gmail and Google Chat into an Inbox tab so nothing asked of you gets lost, and two Claude routines turn the sheet into a weekly agenda for the Tuesday director meeting (downloadable as .xlsx) and into material for the AI Learning Hub newsletter. Nothing is ever deleted: a task stays on one row until it is Done or Dropped.
+Brandon's Desk is a private to-do tracker that lives in one Google Sheet, with a small web app on top that works on a phone and a laptop. Every school morning it reads work Gmail and Google Chat into an Inbox tab so nothing asked of you gets lost, and the Claude routine that builds your daily Desk syncs its items, ticks and Andy's agenda into the sheet, which gives you a weekly agenda for the Tuesday director meeting (downloadable as .xlsx) and material for the AI Learning Hub newsletter. Nothing is ever deleted: a task stays on one row until it is Done or Dropped.
 
 - The sheet: https://docs.google.com/spreadsheets/d/1012Dbz6HB4dXD12Q5ClKm9LytSqgLHDIVz5_n6bHZ6w/edit (owner `brandon.abaki@gmail.com`, editor `bbaki@aisa.sch.ae`). Tabs: Work, Personal, Inbox, Agenda, Config, Log.
 - The web app: an Apps Script project owned by the **work** account, deployed "Execute as me / Only myself". Its `/exec` URL is yours after step 5 below.
-- The docs: `docs/SPEC.md` is the contract (schema, server functions, rules, pages); `docs/research-notes.md` holds the verified Apps Script / clasp / Gmail / Chat facts the code relies on; `docs/routines.md` has the two Claude routines; `docs/UI.md` describes the web page.
+- The docs: `docs/SPEC.md` is the contract (schema, server functions, rules, pages); `docs/research-notes.md` holds the verified Apps Script / clasp / Gmail / Chat facts the code relies on; `docs/routines.md` explains how the Desk routine and the web app share the sheet (`docs/routine-desk-prompt.md` is the routine's full instructions); `docs/UI.md` describes the web page.
 
 ```
 apps-script/   the Apps Script project (pushed with clasp): *.gs server code, Index.html + Styles.html + App.html
@@ -107,7 +107,7 @@ Then check that **Deploy → Manage deployments** in the editor shows the new ve
 
 ### 7. If `setup` created a new sheet
 
-Paste the new sheet's URL to Claude so the routines point at it, and replace the spreadsheet ID in both prompts in `docs/routines.md`.
+Paste the new sheet's URL to Claude so the Desk routine points at it (the spreadsheet ID appears in `docs/routine-desk-prompt.md` and in the live routine).
 
 ### 8. Google Chat (optional)
 
@@ -163,4 +163,4 @@ The browser checks need a Chromium: after `npm install`, run `npx playwright ins
 
 ## Claude routines
 
-The morning capture (weekdays 06:45 Dubai) and the director agenda (Mondays 18:10 Dubai) are Claude routines created in the claude.ai Routines page, not in this repo. `docs/routines.md` has the schedules, the connectors to attach and the exact prompts.
+The Desk morning build (weekdays 06:45 Dubai, or the Desk's "Rebuild now" button) builds your daily Desk and keeps this sheet in step with it: new items appear in the web app, ticks flow both ways, and Andy's agenda lands in the Agenda tab. See `docs/routines.md`; nothing needs setting up in the Routines page.

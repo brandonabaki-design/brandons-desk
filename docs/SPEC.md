@@ -20,12 +20,15 @@ work Gmail  ─┐
 work Chat   ─┴─▶ Apps Script trigger (06:15 Dubai, weekdays) ─▶ Inbox tab
                                                                   │
 personal Gmail ─┐                                                 ▼
-work Calendar ──┴─▶ Claude daily routine (06:45 Dubai) ─▶ Work / Personal tabs (new tasks, Inbox rows promoted or ignored)
+work Calendar ──┴─▶ Claude morning build (06:45 Dubai) ─▶ Work / Personal tabs (new tasks, Inbox rows promoted or ignored),
+                                                          Desk tab, Agenda tab (a first agenda on Monday and meeting-day builds)
                                                                   │
-web app (Desk/Tasks/Inbox/Import/Agenda/Newsletter/History) ◀─────┘  ← Brandon ticks off, adds, imports, edits
+web app (Desk/Tasks/Inbox/Import/Agenda/Newsletter/History) ◀─────┘  ← Brandon ticks off, adds, imports, edits (Agenda too)
                                                                   │
-Claude weekly routine (Mon 18:10 Dubai) ─▶ Agenda tab ◀───────────┘  → web app "Download .xlsx"
+Claude weekly agenda review (Mon 14:45 Dubai) ─▶ Agenda tab ◀─────┘  → web app "Download .xlsx"
 ```
+
+Three writers share the Agenda tab; who wrote each line is recorded in its Generated cell (`docs/AGENDA.md`).
 
 Nothing is deleted. Tasks are carried over as one row until Done or Dropped.
 
@@ -78,12 +81,12 @@ Conditional formatting: Done rows grey + strikethrough, Dropped rows light grey,
 |---|---|---|
 | A | Week of | date (Monday of the meeting week) |
 | B | Section | `Done` / `In progress` / `Questions` / `Documents` / `Notes` |
-| C | Order | integer, display order within section |
+| C | Order | number, display order within section (a routine may write decimals such as 3.1; the web app sorts by it and renumbers 1, 2, 3… on save) |
 | D | Item | text (the task title, question, or document name) |
 | E | Detail | text (note, project, why it matters) |
 | F | Link | url |
 | G | Task ID | linked task, if any |
-| H | Generated | datetime |
+| H | Generated | who wrote the line (`docs/AGENDA.md` section 1): text `yyyy-MM-dd HH:mm claude-desk` (morning build), `… claude-review` (weekly review) or `… web-draft` (a line of the web app's draft saved unchanged); anything else, usually a date-time (the save time), is Brandon's line. The column's number format is a date-time; the tags stay text, and nothing heals, validates or reformats this column. |
 
 ### `Config` (sheetId 4) — Key / Value / Notes
 
@@ -95,7 +98,7 @@ Trigger runs and errors. The app trims the tab to the newest 1 500 rows when it 
 
 ### `Desk` (sheetId 6) — Key / JSON / Built
 
-The day's Desk as the Claude morning build publishes it, one `desk-data` field per row as compact JSON (`items` split into `items`, `items2`, … under 45 000 characters per cell). Column B (and C) formatted as plain text. Written only by the routine (it clears `Desk!A2:C` and rewrites every row on each build); the web app only reads it. `setup()` / `ensureSchema()` create the tab when it is missing; `healSheet` never touches it. Full contract: `docs/DESK.md` section 1.
+The day's Desk as the Claude morning build publishes it, one `desk-data` field per row as compact JSON (`items` split into `items`, `items2`, … under 45 000 characters per cell). Column B (and C) formatted as plain text. Written only by the morning build (it clears `Desk!A2:C` and rewrites every row on each build; the weekly agenda review does not write it); the web app only reads it. `setup()` / `ensureSchema()` create the tab when it is missing; `healSheet` never touches it. Full contract: `docs/DESK.md` section 1.
 
 ### Rows written by other tools
 
@@ -150,9 +153,9 @@ Task object returned everywhere:
 | `listInbox` | `{status?}` | `{items:[InboxItem]}` | Default `New`, newest first. |
 | `promoteInbox` | `{inboxId, category, title?, project?, due?, priority?}` | `{task}` | Creates the task (Source = inbox Source, Link, Source key copied), marks the Inbox row Promoted with Task ID. |
 | `ignoreInbox` | `{inboxId}` | `{ok:true}` | |
-| `getAgenda` | `{meetingDate?}` | `{meetingDate, weekOf, window:{from,to}, saved:boolean, sections:{"Done":[Row],"In progress":[Row],"Questions":[Row],"Documents":[Row],"Notes":[Row]}}` | `meetingDate` defaults to the next `MEETING_DAY` on or after today. If the Agenda tab has rows for that `weekOf`, returns them (`saved:true`); otherwise returns a draft built from tasks (`saved:false`). Row = `{order,item,detail,link,taskId}`. |
-| `saveAgenda` | `{meetingDate, sections}` | `{ok:true, rows:n}` | Replaces that week's rows in the Agenda tab. |
-| `regenerateAgenda` | `{meetingDate}` | same as `getAgenda` | Rebuilds the draft from tasks, keeping any saved `Questions` and `Notes` rows. |
+| `getAgenda` | `{meetingDate?}` | `{meetingDate, weekOf, window:{from,to}, saved:boolean, sections:{"Done":[Row],"In progress":[Row],"Questions":[Row],"Documents":[Row],"Notes":[Row]}, stamp}` | `meetingDate` defaults to the next `MEETING_DAY` on or after today. If the Agenda tab has rows for that `weekOf`, returns them (`saved:true`); otherwise returns a draft built from tasks (`saved:false`). Row = `{order,item,detail,link,taskId,generated}`: a saved row's `generated` is its Generated cell as text (a date-time as `yyyy-MM-dd HH:mm:ss`, Dubai), a draft row's is `"web-draft"`. `stamp` = a short hex fingerprint of every row of that week as the sheet holds it (`docs/AGENDA.md` section 2). |
+| `saveAgenda` | `{meetingDate, sections, stamp?}` | `{ok:true, rows:n, stamp}` | Replaces that week's rows in the Agenda tab. Generated per row: a `generated` that matches `yyyy-MM-dd HH:mm[:ss] claude-desk\|claude-review\|web-draft` is written back exactly, a bare `"web-draft"` becomes `"<now yyyy-MM-dd HH:mm> web-draft"`, anything else the save time as a Date. With a `stamp` that no longer matches the sheet (checked under the lock before anything is deleted) nothing is written and it throws "This agenda changed since you opened it (Claude's weekly review or another tab saved it). Copy any edits you want to keep, then reload the agenda."; without one it saves as before. Returns the week's new stamp, re-read under the lock; when that re-read finds more or fewer rows than the save wrote (a routine wrote the week during the save, through the connector and without the lock), it returns `"changed"` instead, so the page's next save is refused until it reloads. |
+| `regenerateAgenda` | `{meetingDate}` | same as `getAgenda` | Rebuilds the draft from tasks, keeping any saved `Questions` and `Notes` rows (with their `generated`); `stamp` is the sheet's. |
 | `getNewsletter` | `{from?, to?}` | `{tasks:[Task], markdown}` | Work tasks with Newsletter ticked, Done in range (default: last 28 days) plus Open ones; markdown grouped by project with notes and links. |
 | `runCaptureNow` | `{}` | `{gmail:n, chat:n, chatMessages:n, chatMode:"api"\|"email"\|"off", errors:[]}` | Same as the trigger, on demand. `chat` = Chat Inbox rows (one per conversation), `chatMessages` = messages in them (section 6). |
 | `getLog` | `{limit?}` | `{rows:[{time,fn,level,message}]}` | Newest first, default 100. |
@@ -225,7 +228,7 @@ Pages (top tabs; the hash in the URL selects the page):
 1. **Tasks** (hash `#today`; was "Today") — quick-add bar (title, category toggle defaulting to `DEFAULT_QUICKADD_CATEGORY`, Enter to add). Two columns on desktop, stacked on mobile: Work | Personal. Groups within a column: Overdue, Due today, Open, then a collapsed "Done today". Each task row: checkbox, title, chips (project, due, High, Newsletter, Discuss), source link icon. Tap the title to expand an inline editor (details, project with datalist, due, priority, link, Newsletter, Discuss, note, Move to other list, Drop). Ticking the checkbox opens a small note field with "Done" and "Done, no note" buttons; undo appears for 10 s. Search box filters both columns. Counts in the tab label.
 2. **Inbox** — New items from capture: From, Subject, Snippet, link. Buttons: Promote (choose category Work/Personal, edit title, optional project) and Ignore. "Run capture now" button with a result toast (counts + chatMode).
 3. **Import** — paste text (textarea) or choose an .html file; date picker for Created (default today); live preview table (checkbox include, category select, title, project, done?) → Import. Result summary.
-4. **Agenda** — meeting date picker (default next MEETING_DAY), window shown. Sections as editable lists (Done and In progress are read-only drafts but items can be removed; Questions and Notes can be edited/added/reordered; Documents editable). Buttons: Regenerate draft, Save, Download .xlsx, Copy as text. The .xlsx has one sheet "Agenda", title rows (meeting date, window, director name if set), then Section / Item / Detail / Link columns with real hyperlinks and column widths set. The header row is plain text: the pinned SheetJS 0.18.5 community build cannot write cell styles (research-notes.md), so it is not bold.
+4. **Agenda** — meeting date picker (default next MEETING_DAY); the window is shown for an unsaved draft only (a saved agenda may cover more than the week before the meeting). All five sections are editable lists: every row can be edited, reordered and removed, and every section has an Add button (`docs/AGENDA.md` section 2); a non-Documents row with a link keeps an Open ↗ link. Editing a row's text makes it Brandon's line. The page reads the agenda again each time it is opened unless there are unsaved edits (a regenerated draft counts as unsaved). Save sends the stamp the agenda was loaded with; when Claude's weekly review or another tab changed the week since, the save is refused and the error toast offers Reload agenda. Buttons: Regenerate draft, Save, Download .xlsx, Copy as text. The .xlsx has one sheet "Agenda", title rows (meeting date, window for a draft, director name if set), then Section / Item / Detail / Link columns with real hyperlinks and column widths set. The header row is plain text: the pinned SheetJS 0.18.5 community build cannot write cell styles (research-notes.md), so it is not bold.
 5. **Newsletter** — from/to pickers (default last 28 days), list of items with project, note and link; "Copy as Markdown" and "Download .xlsx".
 6. **History** — list of Done/Dropped tasks with filters (category, from/to, search) and reopen.
 
@@ -241,11 +244,12 @@ Every write shows a toast and updates the local state without a full reload. Fai
 - addTask dedupe by sourceKey and by similar title; updateTask whitelist; complete/reopen/drop/move
 - importText: every syntax in section 6; importHtml: a Claude-in-Chrome-style sample with Work/Personal headings, checked/unchecked items, links, and a sample with no lists (fallback)
 - agenda draft: each of the 8 question rules fires on a fixture and not otherwise; Documents dedupe; saved rows win
+- agenda provenance and stale saves (`docs/AGENDA.md`): `generated` read back (Date and text), draft rows `web-draft`, the column H rule on save (tags verbatim, `web-draft` stamped, forged or odd values → the save time as a Date), a round trip keeping untouched Claude lines' tags, the stamp (moved by every field, not by other weeks), a stale stamp writing nothing (also when the sheet changes while the save waits for the lock), no stamp saving as before, the returned stamp equal to the next `getAgenda`'s
 - capture: Gmail fixture (threads where I replied last are skipped; automated senders skipped; dedupe against Inbox and tasks); Chat API fixture; Chat conversations (one row per space, the substantive filter on every example of the first live run, incremental runs, per-message keys of the first live run, a deleted newest message, two overlapping runs in either order, snippet truncation keeping the newest text, group-chat subject and senders, the SPACE @mention rule, `chat`/`chatMessages` counts); Chat 403 → email fallback parses the notification fixture
 - guard(): allowed email passes, other email throws, blank email behaviour
 - Desk (`tests/desk.test.js`, fictional fixtures `tests/fixtures/desk-data.json` + `desk-rows.js`): ensureSchema creates the Desk tab, healSheet ignores it; getDesk empty / invalid (key named, logged) / split items rows in numeric order / defaults / stale in Dubai; matching by task ID then `desk:<id>` in either tab; `added`; setDeskItemDone complete, reopen and create-on-tick (each Source mapping, Due and Priority rules); expandDeskLink for `wt:`/`w:`/`p:`/https and rejection of `javascript:`/`data:`
 - Client/server parity: the client's `expandDeskLink` / `deskHref` (App.html pure block) return exactly what the server's `expandDeskLink` returns, on fixed inputs, every fixture link and a deterministic fuzz (`tests/desk.test.js`)
-- End to end (`tests/e2e.js`): the real page against the real entry points at desktop and phone widths (and with SheetJS blocked), including a Desk scenario: the Desk tab written as the routine writes it (items split over several rows, rows in any order), the Desk as landing page, lanes and counts, ticks and unticks of an item with a row by task ID, one with only a `desk:<id>` row and items with no row (the created rows' fields checked), the add box, the agenda copy and Download .xlsx read back, the stale, invalid and empty states, and the Tasks tab alongside
+- End to end (`tests/e2e.js`): the real page against the real entry points at desktop and phone widths (and with SheetJS blocked), the agenda's provenance through saves (the draft saved as `web-draft`, the weekly review's rows written into the sheet while the page is open, a stale save refused with Reload agenda, an untouched review line keeping its tag and an edited one becoming Brandon's, the page re-reading the week on entry), and a Desk scenario: the Desk tab written as the routine writes it (items split over several rows, rows in any order), the Desk as landing page, lanes and counts, ticks and unticks of an item with a row by task ID, one with only a `desk:<id>` row and items with no row (the created rows' fields checked), the add box, the agenda block from the saved agenda of `agenda.meeting` (Documents pills, its Copy and Download read back, Full agenda) and from the Desk JSON once the week has no rows, the stale, invalid and empty states, and the Tasks tab alongside
 - esc() and link sanitiser (client code is also loaded into a jsdom-free check by extracting the pure helpers in `App.html` between the `/* pure:start */` and `/* pure:end */` markers, which the test harness evals)
 
 ## 10. Setup (what the README gives Brandon, in order; clasp 3.4.x command names)
@@ -260,7 +264,9 @@ Every write shows a toast and updates the local state without a full reload. Fai
 8. Google Chat needs no extra setup since July 2026 (the manifest's Chat advanced service switches the API on and the two read scopes are approved in step 4). If `selfTest` or the Log shows `CHAT_API_BLOCKED … SERVICE_DISABLED`, remove and re-add the Google Chat API under Services in the editor and run `selfTest` again; if it persists, the fallback is a standard GCP project with the Chat API enabled (Project Settings → Change project), which the school may not allow — then Chat runs in email mode. Config `CHAT_ENABLED = FALSE` turns Chat capture off entirely.
 9. One-time checks in the work account (also in the README): open the `/exec` URL in a Chrome profile signed in only as the work account (multi-login is unsupported for web apps); compare one Chat link the capture wrote with the real space; search work Gmail for `from:chat-noreply@google.com` and, if a reminder exists, check that the Inbox row the fallback would create looks right.
 
-## 11. Claude routines (created from the Claude session, not in this repo)
+## 11. Claude routines (created in the claude.ai Routines page, not in this repo)
 
-- **Desk: morning capture** — weekdays 06:45 Asia/Dubai. Reads Inbox rows with Status New, personal Gmail (unanswered asks, last 2 days), work Calendar (today + tomorrow, prep items). Adds tasks to Work/Personal with Source, Link, Source key, Project guess, Newsletter per keywords; promotes/ignores Inbox rows; never duplicates (checks Source key and similar open titles first). Writes one Log row.
-- **Desk: director agenda** — Mondays 18:10 Asia/Dubai. Reads Work tab, builds the agenda for the next meeting with Claude-written questions (better than the rule-based ones) and document links (searches Drive for docs mentioned by Discuss-ticked tasks), writes the Agenda tab rows for that weekOf, sends a push notification with the summary.
+Two routines read and write the sheet through Claude's connectors; `docs/routines.md` says how they fit with the web app and how to create them, and `docs/AGENDA.md` is the contract for the Agenda tab they share with Brandon.
+
+- **Brandon's Desk morning build** — weekdays 06:45 Asia/Dubai (and the Desk's "Rebuild now"). Instructions: `docs/routine-desk-prompt.md`. Builds the Desk artifact and syncs it into the sheet: Work/Personal rows, Inbox Status, the Desk tab (`docs/DESK.md`), one Log row; on Monday builds and the meeting-day build before the meeting it writes a first agenda (Done, In progress, Questions tagged `claude-desk`) unless the week's agenda is already settled by the review or by Brandon.
+- **Weekly agenda review** — Mondays 14:45 Asia/Dubai, or started by hand. Instructions: `docs/routine-agenda-prompt.md`. Reads the week's work (the sheet, mail, Chat, docs, calendar) and writes Andy's agenda for the next meeting into the Agenda tab (Done, In progress, Questions, Documents tagged `claude-review`), replacing only Claude-written lines and keeping every one of Brandon's; adds one Log row. It does not write the Desk tab and sends no push notification.

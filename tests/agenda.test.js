@@ -216,13 +216,19 @@ module.exports = async function (t) {
       Notes: [{ order: 1, item: 'Director said yes' }, { item: '   ' }]
     };
     const saved = sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: edited });
-    assert.deepEqual(saved, { ok: true, rows: 5 });
+    assert.deepEqual(Object.keys(saved), ['ok', 'rows', 'stamp']);
+    assert.equal(saved.ok, true);
+    assert.equal(saved.rows, 5);
     const rows = sb.mock.rows('Agenda');
     assert.equal(rows.length, 5);
     const CA = sb.eval('COLUMN.AGENDA');
     rows.forEach((r) => {
       assert.equal(sb.gs.formatDate(r[CA.weekOf]), '2026-10-12');
-      assert.equal(Object.prototype.toString.call(r[CA.generated]), '[object Date]');
+      if (r[CA.section] === 'In progress' || r[CA.section] === 'Documents') {
+        assert.equal(r[CA.generated], '2026-10-08 10:00 web-draft', 'an unchanged draft line keeps its provenance, stamped with the save time');
+      } else {
+        assert.equal(Object.prototype.toString.call(r[CA.generated]), '[object Date]', "Brandon's lines get the save time as a Date");
+      }
     });
     const q = rows.filter((r) => r[CA.section] === 'Questions');
     assert.deepEqual(q.map((r) => [r[CA.order], r[CA.item], r[CA.link]]), [[1, 'First saved question', ''], [2, 'Second saved question', '']]);
@@ -331,5 +337,275 @@ module.exports = async function (t) {
     sb.gs.saveAgenda_({ meetingDate: '2026-10-20', sections: {} });
     sb.gs.saveAgenda_({ meetingDate: '2026-10-06', sections: {} });
     assert.deepEqual(sb.mock.rows('Agenda'), []);
+  }, { now: NOW });
+
+  // ---- docs/AGENDA.md section 2: provenance in column H (Generated) and stale-save protection ----
+
+  // Thursday 2026-10-08 10:00 Dubai: the "web-draft" stamp a save writes is "2026-10-08 10:00 web-draft".
+  const DRAFT_STAMP = '2026-10-08 10:00 web-draft';
+  const CONFLICT = "This agenda changed since you opened it (Claude's weekly review or another tab saved it). Copy any edits you want to keep, then reload the agenda.";
+  /** One Agenda row as the routines or the sheet hold it: [Week of, Section, Order, Item, Detail, Link, Task ID, Generated]. */
+  const row = (weekOf, section, order, item, generated, extra) => [weekOf, section, order, item, (extra && extra.detail) || '', (extra && extra.link) || '', (extra && extra.taskId) || '', generated];
+
+  await t.test('generated reads back as text: a Date in Dubai time with seconds, text trimmed; every draft row is "web-draft"', (sb, assert) => {
+    sb.mock.seed('Agenda', [
+      row('2026-10-12', 'Done', 1, 'Typed in the web app', new Date('2026-10-05T14:12:30Z')),
+      row('2026-10-12', 'Done', 2, 'Morning build line', '  2026-10-13 06:45 claude-desk  '),
+      row('2026-10-12', 'Questions', 1, 'Review line', '2026-10-12 14:47:05 claude-review'),
+      row('2026-10-12', 'Questions', 2, 'Old line with a number', 46000),
+      row('2026-10-12', 'Notes', 1, 'No Generated at all', ''),
+      row('2026-10-12', 'Notes', 2, 'Guarded text', ' =not a formula')
+    ]);
+    const got = sb.gs.getAgenda_({ meetingDate: '2026-10-13' });
+    assert.equal(got.saved, true);
+    assert.deepEqual(got.sections.Done.map((r) => r.generated), ['2026-10-05 18:12:30', '2026-10-13 06:45 claude-desk']);
+    assert.deepEqual(got.sections.Questions.map((r) => r.generated), ['2026-10-12 14:47:05 claude-review', '46000']);
+    assert.deepEqual(got.sections.Notes.map((r) => r.generated), ['', '=not a formula']);
+    assert.deepEqual(Object.keys(got.sections.Done[0]), ['order', 'item', 'detail', 'link', 'taskId', 'generated']);
+    assert.equal(findUnsafe(got), '');
+
+    // The draft: every row of every section is "web-draft"
+    sb.gs.addTask_({ category: 'Work', title: 'Closed in the window', status: 'Done', done: '2026-10-14', link: 'https://doc/w' });
+    sb.gs.addTask_({ category: 'Work', title: 'Open and high', priority: 'High', discuss: true, link: 'https://doc/h' });
+    const draft = sb.gs.getAgenda_({ meetingDate: '2026-10-20' });
+    assert.equal(draft.saved, false);
+    ['Done', 'In progress', 'Questions', 'Documents'].forEach((s) => {
+      assert.ok(draft.sections[s].length > 0, s + ' has draft rows');
+      draft.sections[s].forEach((r) => assert.equal(r.generated, 'web-draft', s + ': ' + r.item));
+    });
+    const pure = sb.gs.buildAgendaDraft([], sb.gs.agendaWindow('2026-10-20'), TODAY);
+    assert.deepEqual(pure.Questions.map((r) => r.generated), ['web-draft']);
+
+    // Regenerate: rebuilt sections are "web-draft", the kept Questions and Notes keep what the sheet says
+    const regen = sb.gs.regenerateAgenda_({ meetingDate: '2026-10-13' });
+    assert.deepEqual(regen.sections.Questions.map((r) => r.generated), ['2026-10-12 14:47:05 claude-review', '46000']);
+    assert.deepEqual(regen.sections.Notes.map((r) => r.generated), ['', '=not a formula']);
+    regen.sections['In progress'].forEach((r) => assert.equal(r.generated, 'web-draft'));
+  }, { now: NOW });
+
+  await t.test('saveAgenda column H: tags back verbatim, "web-draft" stamped with the save time, anything else (forged or odd) the save time as a Date', (sb, assert) => {
+    const CA = sb.eval('COLUMN.AGENDA');
+    const keep = ['2026-10-05 18:12 claude-desk', '2026-10-05 18:12:30 claude-review', '2026-10-06 09:00 web-draft', '2026-10-13 06:45 claude-desk'];
+    const forged = [
+      '', 'Brandon', 'claude-desk', 'claude-review', 'WEB-DRAFT', 'web-draft ', ' web-draft', 'web-draft\n', 'web-draft claude-desk',
+      '2026-10-05 18:12 claude-desk ', ' 2026-10-05 18:12 claude-desk', '2026-10-05 18:12 claude-desk\n', '2026-10-05 18:12 Claude-desk',
+      '2026-10-05 claude-desk', '2026-10-05T18:12 claude-desk', '2026-10-05 18:12:3 claude-review', '2026-10-05 18:12 claude-desk claude-desk',
+      '2026-10-05 18:12 claude-desk; =HYPERLINK("https://evil")', '=2026-10-05 18:12 claude-desk', '2026-10-05 18:12 claude-agenda',
+      '２０２６-10-05 18:12 claude-desk', '2026-10-05 18:12 web-draft-x', 'x2026-10-05 18:12 claude-desk'
+    ];
+    const odd = [42, true, null, { toString: () => '2026-10-05 18:12 claude-desk' }, ['web-draft'], ['2026-10-05 18:12 claude-desk']];
+    const Notes = [{ item: 'untouched draft line', generated: 'web-draft' }, { item: 'no generated at all' }]
+      .concat(keep.map((g, i) => ({ item: 'kept ' + i, generated: g })))
+      .concat(forged.concat(odd).map((g, i) => ({ item: 'forged ' + i, generated: g })));
+    sb.mock.cellWrites.length = 0;
+    const res = sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Notes: Notes } });
+    assert.equal(res.rows, Notes.length);
+    const byItem = {};
+    sb.mock.rows('Agenda').forEach((r) => { byItem[r[CA.item]] = r[CA.generated]; });
+    const isDate = (v) => Object.prototype.toString.call(v) === '[object Date]';
+    assert.equal(byItem['untouched draft line'], DRAFT_STAMP, 'bare "web-draft" → "<now yyyy-MM-dd HH:mm> web-draft"');
+    keep.forEach((g, i) => assert.equal(byItem['kept ' + i], g, 'written back exactly: ' + g));
+    assert.ok(isDate(byItem['no generated at all']) && sb.gs.formatDate(byItem['no generated at all'], "yyyy-MM-dd HH:mm") === '2026-10-08 10:00', 'no value → the save time');
+    forged.concat(odd).forEach((g, i) => assert.ok(isDate(byItem['forged ' + i]), 'not trusted, written as a Date: ' + JSON.stringify(g)));
+    assert.deepEqual(sb.mock.formulas('Agenda'), [], 'nothing became a formula');
+    // Reading it back: the tags as written, Brandon's lines as their Date text
+    const got = sb.gs.getAgenda_({ meetingDate: '2026-10-13' });
+    const gen = {};
+    got.sections.Notes.forEach((r) => { gen[r.item] = r.generated; });
+    assert.equal(gen['untouched draft line'], DRAFT_STAMP);
+    keep.forEach((g, i) => assert.equal(gen['kept ' + i], g));
+    assert.equal(gen['forged 0'], '2026-10-08 10:00:00');
+    // A web-draft stamp saved again keeps its first save time
+    sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Notes: got.sections.Notes.filter((r) => r.item === 'untouched draft line') } });
+    assert.equal(sb.mock.rows('Agenda')[0][CA.generated], DRAFT_STAMP);
+  }, { now: NOW });
+
+  await t.test('a round trip through a save: untouched Claude lines keep their tags, an edited or added line becomes Brandon\'s; Documents and Notes rows are kept', (sb, assert) => {
+    const CA = sb.eval('COLUMN.AGENDA');
+    sb.mock.seed('Agenda', [
+      row('2026-10-12', 'Done', 1, 'Hub mentors on board', '2026-10-12 06:45 claude-desk', { detail: 'Eight mentors' }),
+      row('2026-10-12', 'Done', 2, 'Calendar submitted', '2026-10-12 06:45 claude-desk'),
+      row('2026-10-12', 'In progress', 1, 'Launch note', '2026-10-12 14:46 claude-review', { link: 'https://doc/launch', taskId: 'W-abc' }),
+      row('2026-10-12', 'Questions', 1, 'Budget for kits?', '2026-10-12 14:46 claude-review'),
+      row('2026-10-12', 'Documents', 1, 'Unit plan', new Date('2026-10-11T08:00:00Z'), { link: 'https://doc/plan' }),
+      row('2026-10-12', 'Notes', 1, 'Andy asked for numbers', new Date('2026-10-11T08:00:00Z'))
+    ]);
+    const a = sb.gs.getAgenda_({ meetingDate: '2026-10-13' });
+    // what the client sends after Brandon edited one Done line (its generated cleared) and added a question
+    const sections = JSON.parse(JSON.stringify(a.sections));
+    sections.Done[1].item = 'Assessment calendar submitted to Omar';
+    sections.Done[1].generated = '';
+    sections.Questions.push({ item: 'Can we move the PD day?', detail: '', link: '', taskId: '', generated: '' });
+    const res = sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: sections, stamp: a.stamp });
+    assert.equal(res.rows, 7);
+    const rows = sb.mock.rows('Agenda');
+    const g = (item) => rows.find((r) => r[CA.item] === item)[CA.generated];
+    assert.equal(g('Hub mentors on board'), '2026-10-12 06:45 claude-desk', 'untouched morning-build line keeps its tag');
+    assert.equal(g('Launch note'), '2026-10-12 14:46 claude-review', 'untouched review line keeps its tag');
+    assert.equal(g('Budget for kits?'), '2026-10-12 14:46 claude-review');
+    assert.equal(Object.prototype.toString.call(g('Assessment calendar submitted to Omar')), '[object Date]', 'the edited line is now Brandon\'s');
+    assert.equal(Object.prototype.toString.call(g('Can we move the PD day?')), '[object Date]', 'an added line is Brandon\'s');
+    assert.equal(sb.gs.toDateTimeString(g('Unit plan')), '2026-10-08T10:00:00+04:00', 'Brandon\'s Documents row: still his (the save time)');
+    assert.equal(rows.find((r) => r[CA.item] === 'Launch note')[CA.link], 'https://doc/launch');
+    assert.equal(rows.find((r) => r[CA.item] === 'Launch note')[CA.taskId], 'W-abc');
+    const back = sb.gs.getAgenda_({ meetingDate: '2026-10-13' });
+    assert.equal(back.stamp, res.stamp, 'the stamp the save returned is the one the next getAgenda gives');
+    assert.deepEqual(back.sections.Done.map((r) => [r.item, r.generated]), [['Hub mentors on board', '2026-10-12 06:45 claude-desk'], ['Assessment calendar submitted to Omar', '2026-10-08 10:00:00']]);
+  }, { now: NOW });
+
+  await t.test('stamp: a short hex fingerprint of the week that every row change moves and other weeks do not', (sb, assert) => {
+    const CA = sb.eval('COLUMN.AGENDA');
+    const stampOf = () => sb.gs.getAgenda_({ meetingDate: '2026-10-13' }).stamp;
+    const empty = stampOf();
+    assert.match(empty, /^[0-9a-f]{16}$/);
+    assert.equal(sb.gs.regenerateAgenda_({ meetingDate: '2026-10-13' }).stamp, empty, 'regenerateAgenda returns the same stamp');
+    assert.notEqual(sb.gs.getAgenda_({ meetingDate: '2026-10-20' }).stamp, undefined);
+    sb.mock.seed('Agenda', [
+      row('2026-10-12', 'Done', 1, 'One', '2026-10-12 06:45 claude-desk', { detail: 'd', link: 'https://doc/1', taskId: 'W-1' }),
+      row('2026-10-12', 'Questions', 1, 'Two?', new Date('2026-10-11T08:00:00Z'))
+    ]);
+    const base = stampOf();
+    assert.notEqual(base, empty, 'rows added → new stamp');
+    assert.equal(stampOf(), base, 'deterministic');
+    // other weeks' rows (and the row numbers they shift) do not count
+    sb.mock.seed('Agenda', [row('2026-10-19', 'Notes', 1, 'Next week', '')]);
+    assert.equal(stampOf(), base);
+    sb.mock.sheet('Agenda').deleteRows(4, 1);
+    assert.equal(stampOf(), base);
+    // each field of a row of the week, and a row of an unknown section, moves it
+    const edits = [[CA.section, 'In progress'], [CA.order, 3], [CA.item, 'One!'], [CA.detail, 'd2'], [CA.link, 'https://doc/2'], [CA.taskId, 'W-2'],
+      [CA.generated, '2026-10-12 06:46 claude-desk'], [CA.generated, new Date('2026-10-12T02:45:00Z')]];
+    edits.forEach((e) => {
+      const before = sb.mock.sheet('Agenda').getRange(2, e[0] + 1).getValue();
+      sb.mock.setCell('Agenda', 2, e[0] + 1, e[1]);
+      assert.notEqual(stampOf(), base, 'column ' + e[0] + ' changed');
+      sb.mock.setCell('Agenda', 2, e[0] + 1, before);
+      assert.equal(stampOf(), base);
+    });
+    sb.mock.seed('Agenda', [row('2026-10-12', 'Misc', 1, 'Not a section', '')]);
+    assert.notEqual(stampOf(), base, 'a row of that week in no known section counts too (a save deletes it)');
+  }, { now: NOW });
+
+  await t.test('stale-save protection: a stamp that no longer matches writes nothing and says why; a matching one saves; no stamp saves as before', (sb, assert) => {
+    const CA = sb.eval('COLUMN.AGENDA');
+    sb.mock.seed('Agenda', [
+      row('2026-10-05', 'Notes', 1, 'Last week', ''),
+      row('2026-10-12', 'Done', 1, 'Morning build line', '2026-10-12 06:45 claude-desk')
+    ]);
+    const opened = sb.gs.getAgenda_({ meetingDate: '2026-10-13' });
+    // The weekly review rewrites the week after Brandon opened it
+    sb.mock.setCell('Agenda', 3, CA.generated + 1, '2026-10-12 14:46 claude-review');
+    sb.mock.seed('Agenda', [row('2026-10-12', 'Questions', 1, 'Review question?', '2026-10-12 14:46 claude-review')]);
+    const before = JSON.stringify(sb.mock.rows('Agenda'));
+    sb.mock.cellWrites.length = 0;
+    const edits = { Done: [{ item: 'My own line', generated: '' }] };
+    assert.throws(() => sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: edits, stamp: opened.stamp }), (e) => e.isUserError === true && e.message === CONFLICT);
+    assert.equal(JSON.stringify(sb.mock.rows('Agenda')), before, 'nothing deleted or written');
+    assert.ok(!sb.mock.cellWrites.some((w) => w.sheet === 'Agenda'), 'no Agenda cell was written');
+    assert.equal(sb.mock.locks.held, 0, 'lock released');
+    assert.ok(sb.mock.logRows().some((r) => r.fn === 'saveAgenda' && r.level === 'WARN' && /changed since it was opened/.test(r.message)));
+    // The entry point passes the whole message to the page
+    assert.throws(() => sb.gs.saveAgenda({ meetingDate: '2026-10-13', sections: edits, stamp: opened.stamp }), (e) => e.message === CONFLICT);
+    // Reloaded: the new stamp saves, and the stamp it returns is the next getAgenda's
+    const reloaded = sb.gs.getAgenda_({ meetingDate: '2026-10-13' });
+    assert.notEqual(reloaded.stamp, opened.stamp);
+    const res = sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: edits, stamp: reloaded.stamp });
+    assert.deepEqual([res.ok, res.rows], [true, 1]);
+    assert.match(res.stamp, /^[0-9a-f]{16}$/);
+    assert.equal(sb.gs.getAgenda_({ meetingDate: '2026-10-13' }).stamp, res.stamp);
+    assert.deepEqual(sb.mock.rows('Agenda').map((r) => r[CA.item]), ['Last week', 'My own line']);
+    // saving again with the returned stamp works (no reload needed after one's own save)
+    const res2 = sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Done: [{ item: 'My own line, again' }] }, stamp: res.stamp });
+    assert.equal(sb.gs.getAgenda_({ meetingDate: '2026-10-13' }).stamp, res2.stamp);
+    // without a stamp (old clients, tests), or with a stamp that is not a string, it saves as before even after a change
+    sb.mock.seed('Agenda', [row('2026-10-12', 'Questions', 1, 'Another review question?', '2026-10-12 14:50 claude-review')]);
+    [undefined, null, 42, {}].forEach((stamp, i) => {
+      const r = sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Notes: [{ item: 'no stamp ' + i }] }, stamp: stamp });
+      assert.equal(r.rows, 1);
+      assert.deepEqual(sb.mock.rows('Agenda').map((x) => x[CA.item]), ['Last week', 'no stamp ' + i]);
+    });
+    // a draft opened on an empty week is stale once a routine writes that week
+    const draft = sb.gs.getAgenda_({ meetingDate: '2026-10-20' });
+    assert.equal(draft.saved, false);
+    sb.mock.seed('Agenda', [row('2026-10-19', 'Done', 1, 'Morning build line', '2026-10-19 06:45 claude-desk')]);
+    assert.throws(() => sb.gs.saveAgenda_({ meetingDate: '2026-10-20', sections: draft.sections, stamp: draft.stamp }), (e) => e.message === CONFLICT);
+    assert.equal(sb.mock.rows('Agenda').filter((r) => sb.gs.toDateString(r[CA.weekOf]) === '2026-10-19').length, 1);
+  }, { now: NOW });
+
+  await t.test('the stamp is checked inside the lock, before anything is deleted: a write that lands while the save waits for the lock wins', (sb, assert) => {
+    const CA = sb.eval('COLUMN.AGENDA');
+    sb.mock.seed('Agenda', [row('2026-10-12', 'Done', 1, 'Morning build line', '2026-10-12 06:45 claude-desk')]);
+    const opened = sb.gs.getAgenda_({ meetingDate: '2026-10-13' });
+    let landed = 0;
+    sb.mock.locks.onWait = () => {
+      if (landed++) return;
+      sb.mock.seed('Agenda', [row('2026-10-12', 'Questions', 1, 'Review question?', '2026-10-12 14:46 claude-review')]);
+    };
+    assert.throws(() => sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Done: [{ item: 'Mine' }] }, stamp: opened.stamp }), (e) => e.message === CONFLICT);
+    sb.mock.locks.onWait = null;
+    assert.deepEqual(sb.mock.rows('Agenda').map((r) => [r[CA.section], r[CA.item]]), [['Done', 'Morning build line'], ['Questions', 'Review question?']], 'both rows survive');
+  }, { now: NOW });
+
+  await t.test('a routine that appends to the week between the save\'s write and its re-read: the returned stamp vouches for nothing, so the next save is refused and the routine\'s rows survive', (sb, assert) => {
+    const CA = sb.eval('COLUMN.AGENDA');
+    sb.mock.seed('Agenda', [row('2026-10-12', 'Done', 1, 'Brandon line', new Date('2026-10-11T08:00:00Z'))]);
+    const opened = sb.gs.getAgenda_({ meetingDate: '2026-10-13' });
+    // The weekly review's append_values lands right after the save's appendRows (the routines do not take the script lock)
+    const appendRows = sb.gs.appendRows;
+    let raced = 0;
+    sb.gs.appendRows = function () {
+      const out = appendRows.apply(this, arguments);
+      if (!raced++) sb.mock.seed('Agenda', [row('2026-10-12', 'Questions', 1, 'Review question?', '2026-10-12 14:46 claude-review')]);
+      return out;
+    };
+    const res = sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Done: [{ item: 'Brandon line', generated: '' }] }, stamp: opened.stamp });
+    sb.gs.appendRows = appendRows;
+    assert.equal(raced, 1, 'the race was staged');
+    assert.deepEqual([res.ok, res.rows], [true, 1]);
+    assert.notEqual(res.stamp, sb.gs.getAgenda_({ meetingDate: '2026-10-13' }).stamp, 'the returned stamp does not cover rows the page never saw');
+    assert.ok(sb.mock.logRows().some((r) => r.fn === 'saveAgenda' && r.level === 'WARN' && /changed during the save/.test(r.message)));
+    // The page saves again with the stamp it got: refused, and the review's row is still there
+    assert.throws(() => sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: { Done: [{ item: 'Brandon line (fixed)' }] }, stamp: res.stamp }), (e) => e.message === CONFLICT);
+    assert.deepEqual(sb.mock.rows('Agenda').map((r) => [r[CA.section], r[CA.item]]), [['Done', 'Brandon line'], ['Questions', 'Review question?']]);
+    // Reload agenda: the review's row shows, and the fresh stamp saves
+    const reloaded = sb.gs.getAgenda_({ meetingDate: '2026-10-13' });
+    assert.deepEqual(reloaded.sections.Questions.map((r) => r.item), ['Review question?']);
+    const res2 = sb.gs.saveAgenda_({ meetingDate: '2026-10-13', sections: reloaded.sections, stamp: reloaded.stamp });
+    assert.equal(sb.gs.getAgenda_({ meetingDate: '2026-10-13' }).stamp, res2.stamp, 'without a race the returned stamp is the next getAgenda\'s');
+  }, { now: NOW });
+
+  await t.test('rows a routine wrote as text through the connector (Sheets parses Week of and Order): decimal Orders sort, a save renumbers them, tags come back verbatim', (sb, assert) => {
+    const CA = sb.eval('COLUMN.AGENDA');
+    sb.mock.coerceStrings = true;
+    const MINE = new Date('2026-10-15T05:12:00Z');
+    sb.mock.seed('Agenda', [
+      row('2026-10-19', 'Questions', '2.2', 'Second review question?', '2026-10-19 14:46 claude-review'),
+      row('2026-10-19', 'Questions', '1', 'My first question?', MINE),
+      row('2026-10-19', 'Questions', '3', 'Anything from your side for me?', MINE),
+      row('2026-10-19', 'Questions', '2.1', 'First review question?', '2026-10-19 14:46:05 claude-review'),
+      row('2026-10-19', 'Questions', '2', 'My second question?', MINE),
+      row('2026-10-19', 'Done', '1', 'Morning build line', '2026-10-19 06:45 claude-desk')
+    ]);
+    const raw = sb.mock.rows('Agenda');
+    assert.equal(Object.prototype.toString.call(raw[0][CA.weekOf]), '[object Date]', 'Week of text became a Date');
+    assert.equal(raw[0][CA.order], 2.2, 'Order text became a number');
+    assert.equal(raw[0][CA.generated], '2026-10-19 14:46 claude-review', 'a tag stays text');
+    const got = sb.gs.getAgenda_({ meetingDate: '2026-10-20' });
+    assert.equal(got.saved, true);
+    const items = ['My first question?', 'My second question?', 'First review question?', 'Second review question?', 'Anything from your side for me?'];
+    assert.deepEqual(got.sections.Questions.map((r) => [r.order, r.item]), items.map((it, i) => [i + 1, it]));
+    assert.deepEqual(got.sections.Questions.map((r) => r.generated),
+      ['2026-10-15 09:12:00', '2026-10-15 09:12:00', '2026-10-19 14:46:05 claude-review', '2026-10-19 14:46 claude-review', '2026-10-15 09:12:00']);
+    assert.deepEqual(got.sections.Done.map((r) => r.generated), ['2026-10-19 06:45 claude-desk']);
+    // saveAgenda sorts decimal Orders too (rows sent out of order), renumbers 1, 2, 3… and writes the tags back verbatim
+    const sent = JSON.parse(JSON.stringify(got.sections));
+    sent.Questions = [3, 2.2, 1, 2.1, 2].map((o) => Object.assign({}, got.sections.Questions[[1, 2, 2.1, 2.2, 3].indexOf(o)], { order: o }));
+    const res = sb.gs.saveAgenda_({ meetingDate: '2026-10-20', sections: sent, stamp: got.stamp });
+    assert.equal(res.rows, 6);
+    const q = sb.mock.rows('Agenda').filter((r) => r[CA.section] === 'Questions');
+    assert.deepEqual(q.map((r) => [r[CA.order], r[CA.item]]), items.map((it, i) => [i + 1, it]));
+    assert.deepEqual(q.filter((r) => typeof r[CA.generated] === 'string').map((r) => r[CA.generated]), ['2026-10-19 14:46:05 claude-review', '2026-10-19 14:46 claude-review']);
+    assert.equal(sb.gs.getAgenda_({ meetingDate: '2026-10-20' }).stamp, res.stamp);
+    sb.mock.coerceStrings = false;
   }, { now: NOW });
 };

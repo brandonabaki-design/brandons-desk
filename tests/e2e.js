@@ -9,9 +9,12 @@
  * SheetJS CDN blocked (CSV fallback). A second scenario covers the Desk home page (docs/DESK.md): a fictional
  * desk-data written into the Desk tab as the routine writes it (meta/strip/items/items2/… rows), then landing,
  * lanes and counts, ticks of an item with a row, one with only a desk:<id> row and one with no row (created on
- * tick), unticks, the add box, the agenda copy and download, the stale, invalid and empty states, and the Tasks
- * tab alongside. Fails (exit 1) on any console error, uncaught page error, unexpected network request,
- * Date/undefined leaking out of a server function, or a failed step.
+ * tick), unticks, the add box, the agenda block (the saved agenda of agenda.meeting with its copy and download, Full
+ * agenda, then the Desk JSON once the week has no rows), the stale, invalid and empty states, and the Tasks tab alongside.
+ * The agenda flow covers docs/AGENDA.md: the draft saved as "web-draft", the weekly review written into the sheet while
+ * the page is open, a stale save refused with Reload agenda, untouched review lines keeping their tag through a save.
+ * Fails (exit 1) on any console error, uncaught page error, unexpected network request, Date/undefined leaking out of a
+ * server function, or a failed step.
  *
  *   node tests/e2e.js            (npm test runs it after the unit tests)
  *   E2E_ONLY=desk node tests/e2e.js   (only the Desk scenario; E2E_ONLY=tasks for the other one)
@@ -183,12 +186,27 @@ function seedSheet(sb) {
   sb.mock.urlFetch.handler = () => ({ code: 200, body: {} });
 }
 
+/**
+ * What a Claude routine does to the Agenda tab through the Sheets API (docs/AGENDA.md section 3): the week's old rows go
+ * (bottom-up), then the new rows are written below the last filled row, Week of as yyyy-MM-dd text, Generated as tag text.
+ */
+function routineWritesWeek(sb, weekOf, rows, keep) {
+  const sheet = sb.mock.sheet('Agenda');
+  const last = sheet.getLastRow();
+  for (let r = last; r >= 2; r--) {
+    const cells = sheet.getRange(r, 1, 1, 8).getValues()[0];
+    if (sb.gs.toDateString(cells[0]) === weekOf && !(keep && keep(cells))) sheet.deleteRows(r, 1);
+  }
+  if (rows.length) sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, 8).setValues(rows.map((r) => [weekOf].concat(r)));
+}
+
 /** Sheet readers (through the server's own row mapping, so dates come back as strings). */
 function sheetView(sb) {
   const tasks = (tab) => sb.mock.rows(tab).map((r, i) => sb.gs.rowToTask(r, tab, i + 2));
   const inbox = () => sb.gs.readRows('Inbox').map((r) => sb.gs.rowToInboxItem_(r));
+  // generated: a tag ("… claude-review", "… web-draft") as the text it is, a Date (Brandon's line) as an ISO date-time
   const agenda = () => sb.gs.readRows('Agenda').map((r) => ({ weekOf: sb.gs.toDateString(r.weekOf), section: String(r.section), order: Number(r.order), item: String(r.item),
-    detail: String(r.detail), link: String(r.link), taskId: String(r.taskId), generated: sb.gs.toDateTimeString(r.generated) }));
+    detail: String(r.detail), link: String(r.link), taskId: String(r.taskId), generated: typeof r.generated === 'string' ? r.generated : sb.gs.toDateTimeString(r.generated) }));
   return { tasks, inbox, agenda, find: (tab, title) => tasks(tab).find((t) => t.title === title) || null };
 }
 
@@ -553,23 +571,29 @@ async function runScenario(browser, url, vp, xlsxOk) {
     await gotoPage(page, 'today');
     check(await page.locator('#col-work .task', { hasText: 'Send Hub numbers to Sarah' }).count() === 1, tag + ': promoted task on Today without reload');
 
-    // ---- agenda: draft, questions in rule order, save, regenerate keeps saved Questions ----
+    // ---- agenda: draft, questions in rule order, save (every line "web-draft"), then the weekly review and Brandon's edits ----
+    const agendaValues = (section, sel) => page.locator('[data-section="' + section + '"] .arow ' + (sel || 'textarea')).evaluateAll((els) => els.map((e) => e.value));
     await gotoPage(page, 'agenda');
     check((await page.inputValue('#agenda-date')) === '2026-10-13', tag + ': meeting date defaults to the next Tuesday');
-    check(/Tue 6 Oct – Mon 12 Oct/.test(await page.textContent('#agenda-window')), tag + ': window shown ' + (await page.textContent('#agenda-window')));
+    check(/Tue 6 Oct – Mon 12 Oct/.test(await page.textContent('#agenda-window')), tag + ': window shown on the draft ' + (await page.textContent('#agenda-window')));
     check((await page.textContent('#agenda-state')).trim() === 'Draft', tag + ': no saved rows → Draft');
     check(/With Dr Sarah Mitchell/.test(await page.textContent('#agenda-director')), tag + ': director name from Config');
-    const doneItems = await page.locator('[data-section="Done"] .arow .text > div:first-child').allTextContents();
+    const draftCall = calls.filter((c) => c.name === 'getAgenda').slice(-1)[0].result;
+    check(/^[0-9a-f]{16}$/.test(draftCall.stamp) && ['Done', 'In progress', 'Questions', 'Documents'].every((sec) => draftCall.sections[sec].every((r) => r.generated === 'web-draft')),
+      tag + ': getAgenda answers with the week\'s stamp, every draft row generated "web-draft"');
+    const doneItems = await agendaValues('Done');
     check(JSON.stringify(doneItems) === JSON.stringify(['Share workshop photos with comms team', 'Set up Chat space for Hub mentors', 'Test AI tutor pilot with Grade 8']), tag + ': Done section: Done-in-window Work tasks by project then date ' + JSON.stringify(doneItems));
-    const doneDetail = await page.locator('[data-section="Done"] .arow .detail').first().textContent();
+    const doneDetail = (await agendaValues('Done', 'input[aria-label="Detail"]'))[0];
     check(doneDetail === 'AI Learning Hub · Sent 12 photos', tag + ': Done detail = "Project · note"');
-    const progress = await page.locator('[data-section="In progress"] .arow .text > div:first-child').allTextContents();
+    check(await page.locator('[data-section="Done"] .arow a', { hasText: 'Open ↗' }).count() === 3 && await page.locator('[data-section="Done"] .arow textarea[aria-label="Done item"]').count() === 3,
+      tag + ': Done rows are editable and keep their Open ↗ links');
+    const progress = await agendaValues('In progress');
     check(progress.length >= 5 && progress[0] === 'Review Grade 10 Design unit plan draft' && progress[1] === 'Coordinate single sign-on for the Hub portal' && progress.indexOf('Order replacement micro:bits') >= 0 && progress.indexOf('Send Hub numbers to Sarah before Tuesday') >= 0 && progress.indexOf('Update the department website links') < 0,
       tag + ': In progress: High first (due before undated), then Discuss / created-in-window; stale task excluded ' + JSON.stringify(progress));
-    const questions = await page.locator('[data-section="Questions"] .arow textarea').evaluateAll((els) => els.map((e) => e.value));
+    const questions = await agendaValues('Questions');
     check(JSON.stringify(questions) === JSON.stringify(EXPECTED_QUESTIONS), tag + ': the 8 rule-based questions fire in rule order\n  got: ' + JSON.stringify(questions));
-    const docs = await page.locator('[data-section="Documents"] .arow input[type="text"]').evaluateAll((els) => els.map((e) => e.value));
-    const docLinks = await page.locator('[data-section="Documents"] .arow input[type="url"]').evaluateAll((els) => els.map((e) => e.value));
+    const docs = await agendaValues('Documents', 'input[type="text"]');
+    const docLinks = await agendaValues('Documents', 'input[type="url"]');
     check(JSON.stringify(docs) === JSON.stringify(['Share workshop photos with comms team', 'Set up Chat space for Hub mentors', 'Test AI tutor pilot with Grade 8']) && docLinks[1] === 'https://chat.google.com/room/AAAAmentors',
       tag + ': Documents: distinct links of Discuss/Done-in-window tasks ' + JSON.stringify(docs));
     check(await page.locator('[data-section="Notes"] .arow').count() === 0, tag + ': Notes empty in the draft');
@@ -579,9 +603,12 @@ async function runScenario(browser, url, vp, xlsxOk) {
     check(n1 === 14 + progress.length, tag + ': draft has ' + n1 + ' rows');
     await page.click('#agenda-save');
     check(await waitToast(page, 'Agenda saved (' + n1 + ' rows)'), tag + ': save toast with the row count');
-    check((await page.textContent('#agenda-state')).trim() === 'Saved', tag + ': badge flips to Saved');
+    check((await page.textContent('#agenda-state')).trim() === 'Saved' && (await page.textContent('#agenda-window')) === '', tag + ': badge flips to Saved; the window line goes');
     let saved = S.agenda();
-    check(saved.length === n1 && saved.every((r) => r.weekOf === '2026-10-12' && r.generated.indexOf(TODAY) === 0), tag + ': Agenda tab holds ' + n1 + ' rows for week of 2026-10-12 with Generated = now');
+    check(saved.length === n1 && saved.every((r) => r.weekOf === '2026-10-12' && r.generated === '2026-10-10 09:30 web-draft'),
+      tag + ': Agenda tab holds ' + n1 + ' rows for week of 2026-10-12, each Generated "2026-10-10 09:30 web-draft" (the draft saved unchanged)');
+    const saveCall = calls.filter((c) => c.name === 'saveAgenda').slice(-1)[0];
+    check(saveCall.payload.stamp === draftCall.stamp && /^[0-9a-f]{16}$/.test(saveCall.result.stamp) && saveCall.result.stamp !== draftCall.stamp, tag + ': save sent the draft\'s stamp and got the new one');
     check(JSON.stringify(saved.filter((r) => r.section === 'Questions').map((r) => r.item)) === JSON.stringify(EXPECTED_QUESTIONS) && saved.filter((r) => r.section === 'Questions').map((r) => r.order).join() === '1,2,3,4,5,6,7,8',
       tag + ': Questions rows saved in order 1..8');
     check(saved.filter((r) => r.section === 'Done')[0].taskId === 'W-e2e00004' && saved.filter((r) => r.section === 'Documents')[1].link === 'https://chat.google.com/room/AAAAmentors', tag + ': Task ID and Link columns saved');
@@ -590,7 +617,72 @@ async function runScenario(browser, url, vp, xlsxOk) {
     await page.goto(url + '?reload=1#agenda');
     await page.waitForSelector('body[data-ready="1"]');
     await page.waitForFunction(() => document.querySelectorAll('[data-section="Questions"] .arow').length > 0);
-    check((await page.textContent('#agenda-state')).trim() === 'Saved' && (calls.filter((c) => c.name === 'getAgenda').slice(-1)[0].result.saved === true), tag + ': getAgenda returns the saved rows (saved:true) after reload');
+    const reloadCall = calls.filter((c) => c.name === 'getAgenda').slice(-1)[0].result;
+    check((await page.textContent('#agenda-state')).trim() === 'Saved' && reloadCall.saved === true && reloadCall.stamp === saveCall.result.stamp &&
+      reloadCall.sections.Done.every((r) => r.generated === '2026-10-10 09:30 web-draft'), tag + ': getAgenda returns the saved rows (saved:true, generated read back, the save\'s stamp) after reload');
+
+    // ---- the weekly review rewrites the week while the page is open: entering the page reads it again ----
+    const REVIEW = '2026-10-10 09:31 claude-review';
+    const reviewRows = [
+      ['Done', 1, 'Hub mentors on board', 'Eight mentors in the Chat space', 'https://chat.google.com/room/AAAAmentors', 'W-e2e00005', REVIEW],
+      ['Done', 2, 'AI tutor pilot run with Grade 8', '22 of 24 students used the hints mode', '', 'W-e2e00006', REVIEW],
+      ['In progress', 1, 'Grade 10 Design unit plan', 'Rubric with Lina by Tuesday', 'https://docs.google.com/document/d/1AbCdEf/edit', 'W-e2e00009', REVIEW],
+      ['In progress', 2, 'Single sign-on for the Hub portal', 'Waiting on IT for a date', '', 'W-e2e00008', REVIEW],
+      ['Questions', 1, 'Can we fund twelve replacement micro:bits from the club budget?', 'Finance needs the code by Thursday', '', 'W-e2e00003', REVIEW],
+      ['Questions', 2, 'Should the Hub numbers go to the board on Wednesday?', '', '', '', REVIEW],
+      ['Questions', 3, 'Anything from your side for my list next week?', '', '', '', REVIEW],
+      ['Documents', 1, 'Unit plan draft', 'The rubric to agree', 'https://docs.google.com/document/d/1AbCdEf/edit', 'W-e2e00009', REVIEW]
+    ];
+    routineWritesWeek(sb, '2026-10-12', reviewRows);
+    await gotoPage(page, 'today');
+    await gotoPage(page, 'agenda');
+    check(JSON.stringify(await agendaValues('Done')) === JSON.stringify(['Hub mentors on board', 'AI tutor pilot run with Grade 8']) && (await agendaValues('Questions')).length === 3,
+      tag + ': opening the Agenda page re-reads it and shows the review\'s rows');
+
+    // ---- a save on a page opened before the sheet changed is refused; Reload agenda shows the new rows ----
+    routineWritesWeek(sb, '2026-10-12', reviewRows.slice(0, 6).concat([['Questions', 3, 'Is the PD day on 2 November still on?', '', '', '', REVIEW],
+      ['Questions', 4, 'Anything from your side for my list next week?', '', '', '', REVIEW], reviewRows[7]]));
+    const beforeConflict = JSON.stringify(S.agenda());
+    await page.locator('[data-section="Questions"] .arow').first().locator('textarea').fill('An edit on an agenda that changed');
+    await page.click('#agenda-save');
+    check(await waitToast(page, "This agenda changed since you opened it (Claude's weekly review or another tab saved it). Copy any edits you want to keep, then reload the agenda."),
+      tag + ': the stale save is refused with the server\'s message');
+    check(JSON.stringify(S.agenda()) === beforeConflict && calls.filter((c) => c.name === 'saveAgenda').slice(-1)[0].error, tag + ': nothing was written to the Agenda tab');
+    check((await agendaValues('Questions'))[0] === 'An edit on an agenda that changed', tag + ': the edits stay on the page to copy');
+    await page.waitForTimeout(300); // the toast's rise animation
+    await shot(page, tag + '-agenda-conflict');
+    await page.locator('.toast .act', { hasText: 'Reload agenda' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-section="Questions"] .arow').length === 4);
+    const reloadedQ = await agendaValues('Questions');
+    check(reloadedQ[2] === 'Is the PD day on 2 November still on?' && reloadedQ.indexOf('An edit on an agenda that changed') < 0 && (await page.textContent('#agenda-state')).trim() === 'Saved',
+      tag + ': Reload agenda drops the edits and shows the rows now in the sheet');
+    await clearToasts(page);
+
+    // ---- generated round trip: untouched review lines keep their tag; an edited (text or only Detail) or added line is Brandon's ----
+    await page.locator('[data-section="Done"] .arow').nth(1).locator('textarea').fill('AI tutor pilot finished with Grade 8');
+    await page.locator('[data-section="In progress"] .arow').nth(1).locator('input[aria-label="Detail"]').fill('IT gave 4 November as the date');
+    await page.locator('[data-section="Questions"] button.add').click();
+    await page.locator('[data-section="Questions"] .arow').last().locator('textarea').fill('Can I present the pilot at the next staff meeting?');
+    await page.click('#agenda-save');
+    check(await waitToast(page, 'Agenda saved (10 rows)'), tag + ': the edited agenda saves (10 rows)');
+    saved = S.agenda();
+    const gen = (item) => (saved.find((r) => r.item === item) || {}).generated;
+    check(gen('Hub mentors on board') === REVIEW && gen('Grade 10 Design unit plan') === REVIEW && gen('Is the PD day on 2 November still on?') === REVIEW && gen('Unit plan draft') === REVIEW,
+      tag + ': untouched review lines keep "' + REVIEW + '"');
+    check(gen('AI tutor pilot finished with Grade 8') === '2026-10-10T09:30:00+04:00' && gen('Can I present the pilot at the next staff meeting?') === '2026-10-10T09:30:00+04:00',
+      tag + ': the edited and the added line are Brandon\'s (the save time as a date-time) ' + JSON.stringify([gen('AI tutor pilot finished with Grade 8')]));
+    check(gen('Single sign-on for the Hub portal') === '2026-10-10T09:30:00+04:00' && saved.find((r) => r.item === 'Single sign-on for the Hub portal').detail === 'IT gave 4 November as the date',
+      tag + ': a review line whose Detail alone was edited is Brandon\'s too ' + JSON.stringify([gen('Single sign-on for the Hub portal')]));
+    check(saved.find((r) => r.item === 'Hub mentors on board').link === 'https://chat.google.com/room/AAAAmentors' && saved.find((r) => r.item === 'Hub mentors on board').taskId === 'W-e2e00005', tag + ': the review line\'s link and Task ID survive the round trip');
+    check(await page.locator('[data-section="Done"] .arow a', { hasText: 'Open ↗' }).count() === 1, tag + ': the review\'s Done link shows as Open ↗');
+    await clearToasts(page);
+
+    // ---- another tab saves a Note; coming back to the page shows it ----
+    routineWritesWeek(sb, '2026-10-12', [['Notes', 1, 'Andy asked for the pilot numbers', '', '', '', sb.gs.parseDate('2026-10-10T09:30:00+04:00')]], () => true);
+    await gotoPage(page, 'today');
+    await gotoPage(page, 'agenda');
+    check(JSON.stringify(await agendaValues('Notes')) === JSON.stringify(['Andy asked for the pilot numbers']), tag + ': the page re-read the week on entry');
+
     // edit a question, add one, remove a Done item, save, then regenerate: Done comes back, Questions stay
     await page.locator('[data-section="Questions"] .arow').first().locator('textarea').fill('Launch note: can we send it Monday instead?');
     await page.locator('[data-section="Questions"] button.add').click();
@@ -601,42 +693,52 @@ async function runScenario(browser, url, vp, xlsxOk) {
       const rows = row ? Array.from(row.parentNode.querySelectorAll('.arow')) : [];
       return { label: a ? a.getAttribute('aria-label') : '', index: rows.indexOf(row), section: row ? row.closest('.agenda-section').getAttribute('data-section') : '' };
     });
+    const nq = await page.locator('[data-section="Questions"] .arow').count(); // 4 from the review, Brandon's, the new one
     await page.locator('[data-section="Questions"] .arow').last().locator('button[aria-label="Move up"]').click();
     let fa = await focusedAgenda();
-    check(fa.label === 'Move up' && fa.section === 'Questions' && fa.index === 7, tag + ': Move up keeps focus on the moved row ' + JSON.stringify(fa));
+    check(fa.label === 'Move up' && fa.section === 'Questions' && fa.index === nq - 2, tag + ': Move up keeps focus on the moved row ' + JSON.stringify(fa));
     await page.keyboard.press('Enter'); // the same (focused) Move up: the row climbs again
     fa = await focusedAgenda();
-    check(fa.label === 'Move up' && fa.index === 6, tag + ': pressing Enter on the refocused button moves the row again ' + JSON.stringify(fa));
-    await page.locator('[data-section="Questions"] .arow').nth(6).locator('button[aria-label="Move down"]').click();
-    await page.locator('[data-section="Questions"] .arow').nth(7).locator('button[aria-label="Move down"]').click();
+    check(fa.label === 'Move up' && fa.index === nq - 3, tag + ': pressing Enter on the refocused button moves the row again ' + JSON.stringify(fa));
+    await page.locator('[data-section="Questions"] .arow').nth(nq - 3).locator('button[aria-label="Move down"]').click();
+    await page.locator('[data-section="Questions"] .arow').nth(nq - 2).locator('button[aria-label="Move down"]').click();
     fa = await focusedAgenda();
-    check(fa.label === 'Move up' && fa.index === 8, tag + ': Move down onto the last row (its Move down is disabled) focuses that row\'s Move up ' + JSON.stringify(fa));
+    check(fa.label === 'Move up' && fa.index === nq - 1, tag + ': Move down onto the last row (its Move down is disabled) focuses that row\'s Move up ' + JSON.stringify(fa));
     await page.locator('[data-section="Done"] .arow').first().locator('button[aria-label="Remove"]').click();
     fa = await focusedAgenda();
     check(fa.label === 'Remove' && fa.section === 'Done' && fa.index === 0, tag + ': Remove focuses the Remove button of the row that took its place ' + JSON.stringify(fa));
     await page.locator('[data-section="Notes"] button.add').click();
     await page.locator('[data-section="Notes"] .arow').last().locator('textarea').fill('Sarah wants the Hub numbers before the board meeting.');
     await shot(page, tag + '-agenda-edited');
-    const n2 = n1 + 1; // −1 Done, +1 Question, +1 Note
+    const n2 = await page.locator('#agenda-sections .arow').count();
     await page.click('#agenda-save');
     check(await waitToast(page, 'Agenda saved (' + n2 + ' rows)'), tag + ': second save (one Done row removed, a question and a note added)');
     saved = S.agenda();
     const savedQ = saved.filter((r) => r.section === 'Questions').map((r) => r.item);
-    check(savedQ.length === 9 && savedQ[0] === 'Launch note: can we send it Monday instead?' && savedQ[8] === 'Can we fund two more micro:bit kits this term?' && saved.filter((r) => r.section === 'Done').length === 2 && saved.filter((r) => r.section === 'Notes').length === 1,
+    check(savedQ.length === nq && savedQ[0] === 'Launch note: can we send it Monday instead?' && savedQ[nq - 1] === 'Can we fund two more micro:bit kits this term?' && saved.filter((r) => r.section === 'Done').length === 1 && saved.filter((r) => r.section === 'Notes').length === 2,
       tag + ': edited/added Questions, removed Done item and the Note are in the sheet');
+    check(saved.find((r) => r.item === 'Andy asked for the pilot numbers').generated === '2026-10-10T09:30:00+04:00', tag + ': the other tab\'s Note stays Brandon\'s');
     await clearToasts(page);
     await page.click('#agenda-regenerate');
     check(await waitToast(page, 'Draft regenerated'), tag + ': regenerate toast');
-    const regenQ = await page.locator('[data-section="Questions"] .arow textarea').evaluateAll((els) => els.map((e) => e.value));
+    const regenQ = await agendaValues('Questions');
     const regenDone = await page.locator('[data-section="Done"] .arow').count();
-    const regenNotes = await page.locator('[data-section="Notes"] .arow textarea').evaluateAll((els) => els.map((e) => e.value));
-    check(JSON.stringify(regenQ) === JSON.stringify(savedQ) && regenDone === 3 && regenNotes[0] === 'Sarah wants the Hub numbers before the board meeting.' && (await page.textContent('#agenda-state')).trim() === 'Draft',
+    const regenNotes = await agendaValues('Notes');
+    check(JSON.stringify(regenQ) === JSON.stringify(savedQ) && regenDone === 3 && regenNotes[1] === 'Sarah wants the Hub numbers before the board meeting.' && (await page.textContent('#agenda-state')).trim() === 'Draft',
       tag + ': regenerate rebuilds Done (3 again) but keeps the saved Questions and Notes; flagged Draft');
+    const regenCall = calls.filter((c) => c.name === 'regenerateAgenda').slice(-1)[0].result;
+    check(regenCall.sections.Done.every((r) => r.generated === 'web-draft') && regenCall.sections.Questions[1].generated === REVIEW && regenCall.stamp === calls.filter((c) => c.name === 'saveAgenda').slice(-1)[0].result.stamp,
+      tag + ': regenerated rows are "web-draft", kept Questions keep their generated, and the stamp is the sheet\'s');
     check(S.agenda().length === n2, tag + ': regenerate does not write to the Agenda tab');
+    const readsBefore = calls.filter((c) => c.name === 'getAgenda').length;
+    await gotoPage(page, 'today');
+    await gotoPage(page, 'agenda');
+    check(calls.filter((c) => c.name === 'getAgenda').length === readsBefore && (await page.textContent('#agenda-state')).trim() === 'Draft' && await page.locator('[data-section="Done"] .arow').count() === 3,
+      tag + ': a regenerated draft counts as unsaved: coming back to the page keeps it');
     await clearToasts(page);
-    // SPEC 8: one sheet "Agenda", title rows, Section/Item/Detail/Link header on row 5, real hyperlinks, column widths.
+    // SPEC 8: one sheet "Agenda", title rows, Section/Item/Detail/Link header on row 5 (a draft has its window row), real hyperlinks, column widths.
     await downloadCheck(page, '#agenda-download', 'agenda-2026-10-13', xlsxOk, tag, 'Agenda', (ws) =>
-      ws.A5 && ws.A5.v === 'Section' && Object.keys(ws).some((k) => /^D\d+$/.test(k) && ws[k].l && ws[k].l.Target === 'https://chat.google.com/room/AAAAmentors'));
+      ws.A5 && ws.A5.v === 'Section' && /^Window: /.test(ws.A2.v) && Object.keys(ws).some((k) => /^D\d+$/.test(k) && ws[k].l && ws[k].l.Target === 'https://chat.google.com/room/AAAAmentors'));
     await page.click('#agenda-copy');
     check(await waitToast(page, 'Agenda copied as text'), tag + ': copy-as-text toast');
     const copied = await page.evaluate(() => window.__copied || '');
@@ -747,7 +849,8 @@ async function runScenario(browser, url, vp, xlsxOk) {
     check(bad.length === 0, tag + ': no console errors or uncaught exceptions' + (bad.length ? '\n  ' + bad.join('\n  ') : ''));
     check(unexpected.length === 0, tag + ': no unexpected network requests' + (unexpected.length ? ' ' + unexpected.join(', ') : ''));
     check(unsafe.length === 0, tag + ': no Date/undefined/function left a server function' + (unsafe.length ? '\n  ' + unsafe.join('\n  ') : ''));
-    const errCalls = calls.filter((c) => c.error && c.error !== 'Not allowed');
+    // "Not allowed" (the guard step) and the agenda conflict (the stale-save step) are expected refusals
+    const errCalls = calls.filter((c) => c.error && c.error !== 'Not allowed' && !(c.name === 'saveAgenda' && /^This agenda changed since you opened it/.test(c.error)));
     check(errCalls.length === 0, tag + ': no server call failed unexpectedly' + (errCalls.length ? '\n  ' + errCalls.map((c) => c.name + ': ' + c.error).join('\n  ') : ''));
     await context.close();
   }
@@ -830,6 +933,19 @@ function seedDeskSheet(sb) {
   ];
   sb.mock.seed('Work', work.map((t) => gs.taskToRow(t, gs.parseDate(t.updated))));
   sb.mock.seed('Personal', personal.map((t) => gs.taskToRow(t, gs.parseDate(t.updated))));
+  // The agenda for the Desk's meeting (Tue 20 Oct, Week of 2026-10-19) as the live sheet holds it: the morning build's lines
+  // (claude-desk), plus a Documents row and a Note Brandon saved (a date-time in Generated).
+  const MORNING = '2026-10-13 06:45 claude-desk';
+  const mine = gs.parseDate('2026-10-12T17:20:00+04:00');
+  sb.mock.seed('Agenda', [
+    ['2026-10-19', 'Done', 1, 'Robotics kits ordered', 'Arrived on Monday', '', '', MORNING],
+    ['2026-10-19', 'Done', 2, 'Reading week plan shared', 'Book list sent to staff', '', '', MORNING],
+    ['2026-10-19', 'In progress', 1, 'Year 8 slides', 'Due Thursday', 'https://docs.example.org/slides/y8', 'W-fx000001', MORNING],
+    ['2026-10-19', 'Questions', 1, 'Can the club budget move to next term?', '', '', '', MORNING],
+    ['2026-10-19', 'Questions', 2, 'Anything from your side for my list next week?', '', '', '', MORNING],
+    ['2026-10-19', 'Documents', 1, 'Club budget form', 'To sign', 'https://forms.example.org/club-budget', '', mine],
+    ['2026-10-19', 'Notes', 1, 'Ask about the reading week', '', '', '', mine]
+  ]);
   // 900 characters per JSON cell instead of 45 000, so the nine fixture items need items, items2, items3, …
   const rows = deskRows(deskData(), DESK_BUILT, { maxChars: 900 });
   writeDeskTab(sb, rows);
@@ -1067,9 +1183,60 @@ async function runDeskScenario(browser, url, vp, xlsxOk) {
     await page.click('#desk-add-category [data-value="Work"]');
     await clearToasts(page);
 
-    // ---- the director agenda: open, copy as text, Download .xlsx (or the CSV fallback) ----
+    // ---- the director agenda (docs/AGENDA.md section 2): agenda.meeting has a saved agenda, so the block shows it ----
+    await page.waitForSelector('#desk-agenda-body[data-source="saved"]', { state: 'attached' });
+    const agCall = calls.filter((c) => c.name === 'getAgenda').slice(-1)[0];
+    check(agCall && JSON.stringify(agCall.payload) === JSON.stringify({ meetingDate: '2026-10-20' }) && agCall.result.saved === true && agCall.result.weekOf === '2026-10-19',
+      tag + ': the Desk read the saved agenda of agenda.meeting (getAgenda 2026-10-20, Week of 2026-10-19)');
+    const agView = () => page.evaluate(() => ({
+      title: document.querySelector('#desk-agenda-summary h2').textContent, heads: Array.from(document.querySelectorAll('#desk-agenda-body h3')).map((x) => x.textContent),
+      items: Array.from(document.querySelectorAll('#desk-agenda-body > div')).map((x) => Array.from(x.querySelectorAll('li > b, li .dk-lnk-t')).map((e) => e.textContent)),
+      docs: Array.from(document.querySelectorAll('#desk-agenda-body a.dk-lnk')).map((x) => [x.textContent, x.getAttribute('href'), x.getAttribute('target'), x.getAttribute('rel')]),
+      text: document.getElementById('desk-agenda-body').textContent, source: document.getElementById('desk-agenda-body').getAttribute('data-source')
+    }));
+    let ag = await agView();
+    check(ag.title === 'Tue 20 Oct · Head of School' && JSON.stringify(ag.heads) === JSON.stringify(['Done', 'In progress', 'Decisions & questions', 'Documents']) &&
+      JSON.stringify(ag.items) === JSON.stringify([['Robotics kits ordered', 'Reading week plan shared'], ['Year 8 slides'], ['Can the club budget move to next term?', 'Anything from your side for my list next week?'], ['Club budget form']]),
+      tag + ': the block shows the saved rows (title from the Desk JSON) ' + JSON.stringify([ag.heads, ag.items]));
+    check(JSON.stringify(ag.docs) === JSON.stringify([['Club budget form', 'https://forms.example.org/club-budget', '_blank', 'noopener']]) && ag.text.indexOf('Ask about the reading week') < 0,
+      tag + ': Documents as link pills; Notes are not shown on the Desk');
     await page.click('#desk-agenda-summary');
     check(await page.evaluate(() => document.getElementById('desk-agenda').open), tag + ': the agenda opens on tap');
+    await shot(page, tag + '-agenda-saved');
+    await page.click('#desk-agenda-copy');
+    check(await waitToast(page, 'Agenda copied as text'), tag + ': copy toast');
+    const savedText = ['Director meeting agenda — Tuesday 20 October 2026', 'Director: ' + DESK_DIRECTOR, '', 'DONE', '1. Robotics kits ordered — Arrived on Monday', '2. Reading week plan shared — Book list sent to staff',
+      '', 'IN PROGRESS', '1. Year 8 slides — Due Thursday https://docs.example.org/slides/y8', '', 'QUESTIONS', '1. Can the club budget move to next term?', '2. Anything from your side for my list next week?',
+      '', 'DOCUMENTS', '1. Club budget form — To sign https://forms.example.org/club-budget', '', 'NOTES', '1. Ask about the reading week'].join('\n');
+    const copiedSaved = await page.evaluate(() => window.__copied || '');
+    check(copiedSaved === savedText, tag + ': Copy agenda as text uses the saved agenda, as the Agenda page does (documents, links, Notes) ' + JSON.stringify(copiedSaved));
+    await clearToasts(page);
+    {
+      const [dlSaved] = await Promise.all([page.waitForEvent('download', { timeout: 8000 }), page.click('#desk-agenda-download')]);
+      const name = dlSaved.suggestedFilename();
+      const file = path.join(DOWNLOADS, tag + '-saved-' + name);
+      await dlSaved.saveAs(file);
+      const got = downloadRows(fs.readFileSync(file), xlsxOk);
+      const want = [['Director meeting agenda — Tuesday 20 October 2026'], ['Director: ' + DESK_DIRECTOR], [], ['Section', 'Item', 'Detail', 'Link'],
+        ['Done', 'Robotics kits ordered', 'Arrived on Monday'], ['Done', 'Reading week plan shared', 'Book list sent to staff'], ['In progress', 'Year 8 slides', 'Due Thursday', 'https://docs.example.org/slides/y8'],
+        ['Questions', 'Can the club budget move to next term?'], ['Questions', 'Anything from your side for my list next week?'], ['Documents', 'Club budget form', 'To sign', 'https://forms.example.org/club-budget'],
+        ['Notes', 'Ask about the reading week']];
+      check(name === 'agenda-2026-10-20.' + (xlsxOk ? 'xlsx' : 'csv') && JSON.stringify(got) === JSON.stringify(want),
+        tag + ': Download gives the Agenda page\'s file for the saved agenda (' + name + ')' + (JSON.stringify(got) === JSON.stringify(want) ? '' : '\n  got: ' + JSON.stringify(got)));
+      await clearToasts(page);
+    }
+    // ---- Full agenda: the Agenda page at the meeting date ----
+    await page.click('#desk-agenda-full');
+    await page.waitForSelector('#page-agenda:not([hidden])');
+    await page.waitForFunction(() => document.getElementById('agenda-date').value === '2026-10-20' && document.querySelectorAll('[data-section="Done"] .arow').length === 2);
+    check((await page.textContent('#agenda-state')).trim() === 'Saved' && (await page.locator('[data-section="Documents"] .arow input[type="text"]').inputValue()) === 'Club budget form',
+      tag + ': Full agenda opens the Agenda page at Tue 20 Oct with the saved rows');
+    // ---- the week's rows go: back on the Desk (read again on the visit) the block and its buttons use the Desk JSON ----
+    routineWritesWeek(sb, '2026-10-19', []);
+    await gotoPage(page, 'desk');
+    await page.waitForSelector('#desk-agenda-body[data-source="desk"]', { state: 'attached' });
+    ag = await agView();
+    check(JSON.stringify(ag.heads) === JSON.stringify(['Done', 'In progress', 'Decisions & questions']) && ag.docs.length === 0, tag + ': not saved → the Desk JSON\'s sections');
     await page.click('#desk-agenda-copy');
     check(await waitToast(page, 'Agenda copied as text'), tag + ': copy toast');
     const copied = await page.evaluate(() => window.__copied || '');

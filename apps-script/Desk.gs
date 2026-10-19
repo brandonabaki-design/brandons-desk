@@ -3,9 +3,10 @@
  * `desk-data` into the Desk tab (one JSON cell per key); getDesk_ assembles it, overlays each
  * item's tracker row (category, taskId, status, done) and lists the Manual tasks added since the
  * build; setDeskItemDone_ ticks an item straight into the Work/Personal tabs, creating its row
- * first when the build has not made one yet.
+ * first when the build has not made one yet. rebuildDesk_ starts the routine through its API
+ * trigger (Rebuild now) and getDeskStatus_ tells the page when the new build has landed.
  *
- * The google.script.run entry points (getDesk, setDeskItemDone) live in Api.gs and run guard()
+ * The google.script.run entry points (getDesk, setDeskItemDone, getDeskStatus, rebuildDesk) live in Api.gs and run guard()
  * through apiCall_. Everything here that touches the sheet is `_`-suffixed (private), so it is
  * not reachable from the browser on its own. expandDeskLink is a pure helper the client mirrors.
  */
@@ -31,6 +32,20 @@ const DESK_ITEM_GONE_ = 'That Desk item is no longer on the Desk';
 
 /** setDeskItemDone refuses longer item ids (the routine's ids are short slugs). */
 const DESK_ITEM_ID_MAX_ = 200;
+
+/**
+ * Rebuild now (docs/DESK.md 5): a POST to the routine's /fire endpoint (Claude Code routines API trigger, research preview)
+ * with the token from Script Property DESK_ROUTINE_TOKEN. The start of the last rebuild is kept in Script Property
+ * DESK_REBUILD as {startedAt: "yyyy-MM-dd HH:mm", ms, sessionUrl}; it counts as running for DESK_REBUILD_WINDOW_MIN_
+ * minutes unless a build newer than its start lands in the Desk tab first, and no second rebuild starts meanwhile.
+ */
+const DESK_FIRE_URL_ = 'https://api.anthropic.com/v1/claude_code/routines/' + DESK_ROUTINE_ID + '/fire';
+const DESK_FIRE_BETA_ = 'experimental-cc-routine-2026-04-01';
+const DESK_FIRE_API_VERSION_ = '2023-06-01';
+const DESK_TOKEN_PROP_ = 'DESK_ROUTINE_TOKEN';
+const DESK_REBUILD_PROP_ = 'DESK_REBUILD';
+const DESK_REBUILD_WINDOW_MIN_ = 20;
+const DESK_SETUP_HINT_ = 'README, setup step 10';
 
 /** Link shorthands (docs/DESK.md 1): AISA Gmail (thread, search) and personal Gmail (thread-f). */
 const DESK_MAIL_WORK_ = 'https://mail.google.com/mail/?authuser=bbaki%40aisa.sch.ae#';
@@ -215,7 +230,10 @@ function deskLanes_(lanes) {
   return out.length ? out : DESK_DEFAULT_LANES_.map((l) => ({ key: l.key, title: l.title }));
 }
 
-/** One desk-data item with every documented field present and typed. */
+/**
+ * One desk-data item with every documented field present and typed. `prompt` (more context) and `outcome` (what done
+ * looks like) are optional and only feed the Prompt Claude button ('' when the routine wrote none).
+ */
 function deskItem_(it) {
   return {
     id: deskText_(it.id).trim(),
@@ -224,7 +242,9 @@ function deskItem_(it) {
     why: deskText_(it.why),
     tags: deskPairs_(it.tags),
     links: deskPairs_(it.links),
-    task: deskTaskId_(it.task)
+    task: deskTaskId_(it.task),
+    prompt: deskText_(it.prompt),
+    outcome: deskText_(it.outcome)
   };
 }
 
@@ -511,8 +531,8 @@ function deskCreateTask_(item, taken) {
 // ---------------------------------------------------------------------------
 
 /**
- * getDesk: {} → {ok:true, desk, added, builtAt, builtDate, stale, deskUrl}, or
- * {ok:false, reason:'empty'|'invalid', message, deskUrl, added} (docs/DESK.md 2).
+ * getDesk: {} → {ok:true, desk, added, builtAt, builtDate, stale, deskUrl, rebuildNow}, or
+ * {ok:false, reason:'empty'|'invalid', message, deskUrl, added, rebuildNow} (docs/DESK.md 2).
  * Each item gains category, taskId, status and done from its tracker row; `category` is the
  * row's tab when a row matched, else the item's own rule. `added` = Open Manual tasks (either
  * tab) that are not an item's row, newest Created first, at most 20.
@@ -522,10 +542,12 @@ function getDesk_() {
   const index = deskTaskIndex_();
   if (tab.bad) {
     log('getDesk', 'ERROR', 'Desk tab row ' + tab.bad.row + ' (' + tab.bad.key + ') is not valid JSON (' + tab.bad.error + ')');
-    return { ok: false, reason: 'invalid', message: deskInvalidMessage_(tab.bad.key), deskUrl: DESK_URL, added: deskAdded_(index, new Set()) };
+    return { ok: false, reason: 'invalid', message: deskInvalidMessage_(tab.bad.key), deskUrl: DESK_URL, added: deskAdded_(index, new Set()),
+      rebuildNow: deskRebuildNow_(tab.builtAt) };
   }
   if (!tab.rows) {
-    return { ok: false, reason: 'empty', message: 'The Desk tab has no data yet.', deskUrl: DESK_URL, added: deskAdded_(index, new Set()) };
+    return { ok: false, reason: 'empty', message: 'The Desk tab has no data yet.', deskUrl: DESK_URL, added: deskAdded_(index, new Set()),
+      rebuildNow: deskRebuildNow_(tab.builtAt) };
   }
   const desk = assembleDesk_(tab);
   const taskIds = new Set();
@@ -546,7 +568,8 @@ function getDesk_() {
     builtAt: builtAt,
     builtDate: builtDate,
     stale: builtDate !== todayDubai(),
-    deskUrl: DESK_URL
+    deskUrl: DESK_URL,
+    rebuildNow: deskRebuildNow_(builtAt)
   };
 }
 
@@ -600,4 +623,127 @@ function setDeskItemDone_(input) {
     if (done) return completeTask_({ category: ref.category, id: ref.id, note: inp.note });
     return reopenTask_(ref);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Rebuild now (docs/DESK.md section 5)
+// ---------------------------------------------------------------------------
+
+/**
+ * The newest Built of the Desk tab's data rows ('' when there are none), as readDeskTab_ works it out but without parsing
+ * or logging anything: getDeskStatus_ runs it about once a minute while a rebuild is on its way.
+ */
+function deskBuiltAt_() {
+  let newest = '';
+  readRows_(TABS.DESK).forEach((r) => {
+    const key = str(r.key).trim().toLowerCase();
+    if (!DESK_ITEMS_KEY_RE_.test(key) && DESK_KEYS_.indexOf(key) < 0) return;
+    if (!unguardCell(str(r.json)).trim()) return;
+    const built = deskBuiltString_(r.built);
+    if (built > newest) newest = built;
+  });
+  return newest;
+}
+
+/** The last rebuild's start as Script Property DESK_REBUILD holds it ({startedAt, ms, sessionUrl}), or null. */
+function deskLastRebuild_() {
+  let v = null;
+  try {
+    v = JSON.parse(PropertiesService.getScriptProperties().getProperty(DESK_REBUILD_PROP_) || 'null');
+  } catch (e) {
+    v = null;
+  }
+  return deskIsObject_(v) && typeof v.startedAt === 'string' && typeof v.ms === 'number' && isFinite(v.ms) ? v : null;
+}
+
+/**
+ * Rebuild now as the page shows it: {ready, running, startedAt, sessionUrl}. ready = a token is saved. running = the last
+ * rebuild started less than DESK_REBUILD_WINDOW_MIN_ minutes ago and the Desk tab holds no build newer than its start
+ * (builtAt and startedAt are both "yyyy-MM-dd HH:mm" in Dubai). startedAt and sessionUrl are '' unless it is running.
+ */
+function deskRebuildNow_(builtAt) {
+  const ready = !!str(PropertiesService.getScriptProperties().getProperty(DESK_TOKEN_PROP_)).trim();
+  const last = deskLastRebuild_();
+  const age = last ? Date.now() - last.ms : -1;
+  const running = !!last && age >= 0 && age < DESK_REBUILD_WINDOW_MIN_ * 60000 && !(str(builtAt) > last.startedAt);
+  return { ready: ready, running: running, startedAt: running ? last.startedAt : '', sessionUrl: running ? deskSessionUrl_(last.sessionUrl) : '' };
+}
+
+/** The run's session link from the routine API, kept only when it is a claude.ai https URL. */
+function deskSessionUrl_(v) {
+  const url = sanitiseLink(str(v));
+  return url.indexOf('https://claude.ai/') === 0 ? url : '';
+}
+
+/** " (<error type>: <message>)" from a routine API error body, kept short for the Log; '' when there is none. */
+function deskFireErrorDetail_(body) {
+  const err = deskIsObject_(body) && deskIsObject_(body.error) ? body.error : null;
+  if (!err) return '';
+  const parts = [str(err.type).trim(), truncate(collapseWhitespace(str(err.message)), 160)].filter(Boolean);
+  return parts.length ? ' (' + parts.join(': ') + ')' : '';
+}
+
+/** What the page says when the routine API refuses a rebuild. */
+function deskFireRefusal_(code) {
+  if (code === 401 || code === 403) {
+    return 'The Desk routine refused the saved token. Generate a new one on the routine\'s API trigger and save it as ' +
+      DESK_TOKEN_PROP_ + ' (' + DESK_SETUP_HINT_ + ').';
+  }
+  if (code === 404) return 'The Desk routine or its API trigger was not found. Check it on claude.ai/code/routines (' + DESK_SETUP_HINT_ + ').';
+  if (code === 429) return 'Too many rebuilds in the last hour. Try again later.';
+  return 'The rebuild did not start (HTTP ' + code + '). Try again in a few minutes.';
+}
+
+/** getDeskStatus: {} → {builtAt, rebuildNow}. The page polls it while a rebuild runs and reads the Desk again once builtAt moves. */
+function getDeskStatus_() {
+  const builtAt = deskBuiltAt_();
+  return { builtAt: builtAt, rebuildNow: deskRebuildNow_(builtAt) };
+}
+
+/**
+ * rebuildDesk: {} → {started:true, sessionUrl, rebuildNow}. Starts the Desk routine now (the same full build as the
+ * morning one) through its API trigger. Refused while the last rebuild is still running, so two builds never write the
+ * sheet at once. The token stays on the server and never reaches the Log.
+ */
+function rebuildDesk_() {
+  const props = PropertiesService.getScriptProperties();
+  const token = str(props.getProperty(DESK_TOKEN_PROP_)).trim();
+  if (!token) {
+    throw userError('Rebuild now is not set up yet: give the Desk routine an API trigger and save its token as the Script Property ' +
+      DESK_TOKEN_PROP_ + ' (' + DESK_SETUP_HINT_ + ').');
+  }
+  // The user lock, not withLock's script lock: the HTTP call below must not hold up ticks and saves.
+  const lock = LockService.getUserLock();
+  if (!lock.tryLock(LOCK_WAIT_MS)) throw userError('A rebuild is being started already. Try again in a moment.');
+  try {
+    const builtAt = deskBuiltAt_();
+    const before = deskRebuildNow_(builtAt);
+    if (before.running) throw userError('The rebuild started at ' + before.startedAt.slice(11) + ' is still running. The Desk updates here when it lands.');
+    const now = new Date();
+    let res;
+    try {
+      res = UrlFetchApp.fetch(DESK_FIRE_URL_, {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { Authorization: 'Bearer ' + token, 'anthropic-beta': DESK_FIRE_BETA_, 'anthropic-version': DESK_FIRE_API_VERSION_ },
+        payload: JSON.stringify({ text: 'Manual rebuild requested from the web app\'s Rebuild now button at ' + formatDate(now, 'HH:mm') + ' Gulf time. Do a full build.' }),
+        muteHttpExceptions: true
+      });
+    } catch (e) {
+      log('rebuildDesk', 'ERROR', 'Could not reach the routine API: ' + errorMessage(e));
+      throw userError('Could not reach the routine service. Try again in a few minutes.');
+    }
+    const code = res.getResponseCode();
+    const body = parseJsonSafe_(res.getContentText());
+    if (code < 200 || code >= 300) {
+      log('rebuildDesk', 'WARN', 'The routine API refused the rebuild: HTTP ' + code + deskFireErrorDetail_(body));
+      throw userError(deskFireRefusal_(code));
+    }
+    const sessionUrl = deskSessionUrl_(body.claude_code_session_url);
+    props.setProperty(DESK_REBUILD_PROP_, JSON.stringify({ startedAt: formatDate(now, 'yyyy-MM-dd HH:mm'), ms: now.getTime(), sessionUrl: sessionUrl }));
+    log('rebuildDesk', 'INFO', 'Rebuild started' + (body.claude_code_session_id ? ' (session ' + truncate(str(body.claude_code_session_id), 80) + ')' : ''));
+    return { started: true, sessionUrl: sessionUrl, rebuildNow: deskRebuildNow_(builtAt) };
+  } finally {
+    lock.releaseLock();
+  }
 }

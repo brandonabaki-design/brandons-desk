@@ -111,7 +111,8 @@ module.exports = async function (t) {
     seedDesk(sb, data);
     const r = sb.gs.getDesk({});
     assert.equal(r.ok, true);
-    assert.deepEqual(Object.keys(r).sort(), ['added', 'builtAt', 'builtDate', 'desk', 'deskUrl', 'ok', 'stale']);
+    assert.deepEqual(Object.keys(r).sort(), ['added', 'builtAt', 'builtDate', 'desk', 'deskUrl', 'ok', 'rebuildNow', 'stale']);
+    assert.deepEqual(r.rebuildNow, { ready: false, running: false, startedAt: '', sessionUrl: '' }, 'no token saved, nothing running');
     assert.deepEqual(Object.keys(r.desk).sort(), DESK_FIELDS.slice().sort());
     assert.equal(r.desk.built, data.built);
     assert.equal(r.desk.eyebrow, data.eyebrow);
@@ -123,7 +124,7 @@ module.exports = async function (t) {
     assert.equal(r.desk.rebuild, undefined, 'meta.rebuild is not passed on');
     assert.deepEqual(r.desk.items.map((it) => it.id), data.items.map((it) => it.id), 'items in order');
     const first = r.desk.items[0];
-    assert.deepEqual(Object.keys(first).sort(), ['category', 'done', 'id', 'lane', 'links', 'status', 'tags', 'task', 'taskId', 'title', 'why']);
+    assert.deepEqual(Object.keys(first).sort(), ['category', 'done', 'id', 'lane', 'links', 'outcome', 'prompt', 'status', 'tags', 'task', 'taskId', 'title', 'why']);
     assert.equal(first.title, data.items[0].title);
     assert.deepEqual(first.tags, data.items[0].tags);
     assert.deepEqual(first.links, data.items[0].links, 'link targets are passed raw; the client expands them');
@@ -197,8 +198,8 @@ module.exports = async function (t) {
     assert.equal(r.desk.agenda, null);
     assert.equal(r.desk.llt, null);
     assert.equal(r.desk.items.length, 2);
-    assert.deepEqual(r.desk.items[0], { id: 'a', lane: '', title: 'Only item', why: '', tags: [], links: [], task: '', category: 'Work', taskId: '', status: '', done: false });
-    assert.deepEqual(r.desk.items[1], { id: 'b', lane: 'reply', title: '7', why: '', tags: [['due', 'Today'], ['', 'Email']], links: [], task: '', category: 'Work', taskId: '', status: '', done: false });
+    assert.deepEqual(r.desk.items[0], { id: 'a', lane: '', title: 'Only item', why: '', tags: [], links: [], task: '', prompt: '', outcome: '', category: 'Work', taskId: '', status: '', done: false });
+    assert.deepEqual(r.desk.items[1], { id: 'b', lane: 'reply', title: '7', why: '', tags: [['due', 'Today'], ['', 'Email']], links: [], task: '', prompt: '', outcome: '', category: 'Work', taskId: '', status: '', done: false });
     const warn = sb.mock.logRows().find((row) => row.fn === 'getDesk' && row.level === 'WARN');
     assert.ok(warn && /items2/.test(warn.message), 'a non-list items row is logged and skipped');
     assert.equal(findUnsafe(r), '');
@@ -755,7 +756,158 @@ module.exports = async function (t) {
     assert.ok(!sb.mock.logRows().some((row) => row.level === 'ERROR'), 'user errors are not logged as errors');
   }, { now: NOW });
 
-  await t.test('getDesk and setDeskItemDone enforce guard() and touch nothing for an outsider', (sb, assert) => {
+  // -------------------------------------------------------------------------
+  // Prompt Claude fields and Rebuild now (docs/DESK.md sections 1 and 5)
+  // -------------------------------------------------------------------------
+
+  await t.test('an item\'s optional prompt and outcome reach the page as text ("" when missing or not text)', (sb, assert) => {
+    const data = deskData();
+    data.items.push({ id: 'odd', lane: 'later', title: 'Odd fields', prompt: { a: 1 }, outcome: ['x'] });
+    seedDesk(sb, data);
+    const by = byId(sb.gs.getDesk({}).desk);
+    assert.equal(by.budget.prompt, 'The club needs 12 new kits; last year\'s form is in the club folder.');
+    assert.equal(by.budget.outcome, 'the form filled in as a draft I can check and submit.');
+    assert.equal(by.slides.prompt, '');
+    assert.equal(by.slides.outcome, '');
+    assert.equal(by.odd.prompt, '');
+    assert.equal(by.odd.outcome, '');
+  }, { now: NOW });
+
+  const FIRE_URL = 'https://api.anthropic.com/v1/claude_code/routines/trig_01VjWbjbnY1YSpjagSffkSNQ/fire';
+  const TOKEN = 'sk-ant-oat01-fixture-token-never-logged';
+  /** Answers the routine API like the real /fire endpoint (or with `reply` when given) and records nothing else. */
+  function fireHandler(sb, reply) {
+    sb.mock.urlFetch.handler = (url) => (url === FIRE_URL ? (reply || { code: 200, body: {
+      type: 'routine_fire', claude_code_session_id: 'session_01FIXTURE', claude_code_session_url: 'https://claude.ai/code/session_01FIXTURE' } }) : null);
+  }
+
+  await t.test('rebuildDesk without a saved token: a setup message, nothing sent, nothing stored', (sb, assert) => {
+    seedDesk(sb, deskData());
+    fireHandler(sb);
+    assert.throws(() => sb.gs.rebuildDesk({}), /^Error: Rebuild now is not set up yet: .*DESK_ROUTINE_TOKEN \(README, setup step 10\)\.$/);
+    sb.mock.properties.DESK_ROUTINE_TOKEN = '   ';
+    assert.throws(() => sb.gs.rebuildDesk({}), /not set up yet/, 'a blank token counts as none');
+    assert.equal(sb.mock.urlFetch.calls.length, 0);
+    assert.equal(sb.mock.properties.DESK_REBUILD, undefined);
+    assert.deepEqual(sb.gs.getDeskStatus({}).rebuildNow, { ready: false, running: false, startedAt: '', sessionUrl: '' });
+  }, { now: NOW });
+
+  await t.test('rebuildDesk POSTs to the routine\'s /fire endpoint with the token, then counts as running until a newer build lands', (sb, assert) => {
+    seedDesk(sb, deskData());
+    sb.mock.properties.DESK_ROUTINE_TOKEN = ' ' + TOKEN + ' ';
+    fireHandler(sb);
+    const r = sb.gs.rebuildDesk({});
+    assert.equal(findUnsafe(r), '');
+    assert.deepEqual(r, { started: true, sessionUrl: 'https://claude.ai/code/session_01FIXTURE',
+      rebuildNow: { ready: true, running: true, startedAt: '2026-10-13 10:00', sessionUrl: 'https://claude.ai/code/session_01FIXTURE' } });
+    assert.equal(sb.mock.urlFetch.calls.length, 1);
+    const call = sb.mock.urlFetch.calls[0];
+    assert.equal(call.url, FIRE_URL);
+    assert.equal(call.params.method, 'post');
+    assert.equal(call.params.contentType, 'application/json');
+    assert.equal(call.params.muteHttpExceptions, true);
+    assert.deepEqual(call.params.headers, { Authorization: 'Bearer ' + TOKEN, 'anthropic-beta': 'experimental-cc-routine-2026-04-01', 'anthropic-version': '2023-06-01' });
+    assert.deepEqual(JSON.parse(call.params.payload), { text: 'Manual rebuild requested from the web app\'s Rebuild now button at 10:00 Gulf time. Do a full build.' });
+    assert.deepEqual(JSON.parse(sb.mock.properties.DESK_REBUILD), { startedAt: '2026-10-13 10:00', ms: Date.parse(NOW), sessionUrl: 'https://claude.ai/code/session_01FIXTURE' });
+    const info = sb.mock.logRows().find((row) => row.fn === 'rebuildDesk');
+    assert.ok(info && info.level === 'INFO' && /session_01FIXTURE/.test(info.message), 'the start is logged with the session id');
+    // getDesk and getDeskStatus both say it is running
+    assert.deepEqual(sb.gs.getDesk({}).rebuildNow, r.rebuildNow);
+    assert.deepEqual(sb.gs.getDeskStatus({}), { builtAt: DESK_BUILT, rebuildNow: r.rebuildNow });
+    // A second press while it runs is refused, without another call
+    assert.throws(() => sb.gs.rebuildDesk({}), /^Error: The rebuild started at 10:00 is still running\. The Desk updates here when it lands\.$/);
+    assert.equal(sb.mock.urlFetch.calls.length, 1);
+    // A build in the same minute as the start predates it; one written later is the new Desk
+    sb.mock.sheet('Desk').clearContents();
+    seedDesk(sb, deskData(), '2026-10-13 10:00');
+    assert.equal(sb.gs.getDeskStatus({}).rebuildNow.running, true);
+    sb.mock.sheet('Desk').clearContents();
+    seedDesk(sb, deskData(), '2026-10-13 10:07');
+    assert.deepEqual(sb.gs.getDeskStatus({}), { builtAt: '2026-10-13 10:07', rebuildNow: { ready: true, running: false, startedAt: '', sessionUrl: '' } });
+    // ... so the next press starts another
+    sb.gs.rebuildDesk({});
+    assert.equal(sb.mock.urlFetch.calls.length, 2);
+    // No token text anywhere in the Log
+    assert.ok(!sb.mock.logRows().some((row) => row.message.indexOf(TOKEN) >= 0));
+  }, { now: NOW });
+
+  await t.test('a rebuild stops counting as running after 20 minutes without a new build', (sb, assert) => {
+    seedDesk(sb, deskData());
+    sb.mock.properties.DESK_ROUTINE_TOKEN = TOKEN;
+    const now = Date.parse(NOW);
+    const stored = (minutesAgo, extra) => { sb.mock.properties.DESK_REBUILD = JSON.stringify(Object.assign({ startedAt: '2026-10-13 09:40', ms: now - minutesAgo * 60000, sessionUrl: 'https://claude.ai/code/session_x' }, extra)); };
+    stored(19);
+    assert.deepEqual(sb.gs.getDeskStatus({}).rebuildNow, { ready: true, running: true, startedAt: '2026-10-13 09:40', sessionUrl: 'https://claude.ai/code/session_x' });
+    stored(20);
+    assert.equal(sb.gs.getDeskStatus({}).rebuildNow.running, false);
+    stored(-5);
+    assert.equal(sb.gs.getDeskStatus({}).rebuildNow.running, false, 'a start in the future (clock change) does not block');
+    stored(1, { sessionUrl: 'javascript:alert(1)' });
+    assert.equal(sb.gs.getDeskStatus({}).rebuildNow.sessionUrl, '', 'only a claude.ai link is passed on');
+    stored(1, { sessionUrl: 'https://evil.example.org/claude.ai/' });
+    assert.equal(sb.gs.getDeskStatus({}).rebuildNow.sessionUrl, '');
+    ['not json', '[1]', '{"startedAt":5,"ms":1}', '{"startedAt":"2026-10-13 09:59"}'].forEach((v) => {
+      sb.mock.properties.DESK_REBUILD = v;
+      assert.equal(sb.gs.getDeskStatus({}).rebuildNow.running, false, 'unreadable state: ' + v);
+    });
+    // With no Desk at all, a fresh rebuild runs until the first build lands
+    sb.mock.sheet('Desk').clearContents();
+    stored(1, { startedAt: '2026-10-13 09:59' });
+    assert.deepEqual(sb.gs.getDeskStatus({}).builtAt, '');
+    assert.equal(sb.gs.getDeskStatus({}).rebuildNow.running, true);
+    assert.equal(sb.gs.getDesk({}).rebuildNow.running, true, 'the empty Desk answer says so too');
+  }, { now: NOW });
+
+  await t.test('rebuildDesk when the routine API refuses: a short message per status, logged without the token, nothing stored', (sb, assert) => {
+    seedDesk(sb, deskData());
+    sb.mock.properties.DESK_ROUTINE_TOKEN = TOKEN;
+    const cases = [
+      [401, /^Error: The Desk routine refused the saved token\. Generate a new one on the routine's API trigger and save it as DESK_ROUTINE_TOKEN \(README, setup step 10\)\.$/],
+      [403, /refused the saved token/],
+      [404, /^Error: The Desk routine or its API trigger was not found\./],
+      [429, /^Error: Too many rebuilds in the last hour\. Try again later\.$/],
+      [500, /^Error: The rebuild did not start \(HTTP 500\)\. Try again in a few minutes\.$/]
+    ];
+    cases.forEach(([code, re]) => {
+      fireHandler(sb, { code: code, body: { type: 'error', error: { type: 'some_error', message: 'Refused for token ' + TOKEN.slice(0, 6) + '…\n  details' } } });
+      assert.throws(() => sb.gs.rebuildDesk({}), re, 'HTTP ' + code);
+    });
+    const warns = sb.mock.logRows().filter((row) => row.fn === 'rebuildDesk');
+    assert.equal(warns.length, cases.length);
+    assert.ok(warns.every((row) => row.level === 'WARN' && /^The routine API refused the rebuild: HTTP \d+ \(some_error: Refused for token sk-ant… details\)$/.test(row.message)), JSON.stringify(warns));
+    // a body that is not JSON
+    fireHandler(sb, { code: 502, body: '<html>Bad gateway</html>' });
+    assert.throws(() => sb.gs.rebuildDesk({}), /HTTP 502/);
+    assert.equal(sb.mock.logRows().slice(-1)[0].message, 'The routine API refused the rebuild: HTTP 502');
+    // the request itself fails (DNS, timeout)
+    sb.mock.urlFetch.handler = () => { throw new Error('Address unavailable: ' + FIRE_URL); };
+    assert.throws(() => sb.gs.rebuildDesk({}), /^Error: Could not reach the routine service\. Try again in a few minutes\.$/);
+    const last = sb.mock.logRows().slice(-1)[0];
+    assert.equal(last.level, 'ERROR');
+    assert.ok(/^Could not reach the routine API: Address unavailable/.test(last.message));
+    assert.equal(sb.mock.properties.DESK_REBUILD, undefined, 'a refused start is not recorded, so the button stays free');
+    assert.ok(!sb.mock.logRows().some((row) => row.message.indexOf(TOKEN) >= 0), 'the token is never logged');
+    // A 2xx answer without a session link still counts as started
+    fireHandler(sb, { code: 200, body: { type: 'routine_fire', claude_code_session_url: 'http://claude.ai.evil.example/x' } });
+    const r = sb.gs.rebuildDesk({});
+    assert.equal(r.started, true);
+    assert.equal(r.sessionUrl, '');
+    assert.equal(r.rebuildNow.running, true);
+  }, { now: NOW });
+
+  await t.test('rebuildDesk does not start a second build while another start holds the lock', (sb, assert) => {
+    seedDesk(sb, deskData());
+    sb.mock.properties.DESK_ROUTINE_TOKEN = TOKEN;
+    fireHandler(sb);
+    sb.mock.locks.failWait = true;
+    assert.throws(() => sb.gs.rebuildDesk({}), /^Error: A rebuild is being started already\. Try again in a moment\.$/);
+    sb.mock.locks.failWait = false;
+    assert.equal(sb.mock.urlFetch.calls.length, 0);
+    sb.gs.rebuildDesk({});
+    assert.equal(sb.mock.locks.held, 0, 'the lock is released');
+  }, { now: NOW });
+
+  await t.test('getDesk, setDeskItemDone, getDeskStatus and rebuildDesk enforce guard() and touch nothing for an outsider', (sb, assert) => {
     seedDesk(sb, deskData());
     sb.gs.readConfig();
     sb.mock.session.activeEmail = 'intruder@example.com';
@@ -763,7 +915,12 @@ module.exports = async function (t) {
     const writes = sb.mock.writes;
     assert.throws(() => sb.gs.getDesk({}), /^Error: Not allowed$/);
     assert.throws(() => sb.gs.setDeskItemDone({ itemId: 'plumber', done: true }), /^Error: Not allowed$/);
-    assert.equal(sb.mock.writes - writes, 2, 'only the two guard WARN log rows');
+    sb.mock.properties.DESK_ROUTINE_TOKEN = 'sk-ant-oat01-fixture';
+    sb.mock.urlFetch.handler = () => ({ code: 200, body: {} });
+    assert.throws(() => sb.gs.getDeskStatus({}), /^Error: Not allowed$/);
+    assert.throws(() => sb.gs.rebuildDesk({}), /^Error: Not allowed$/);
+    assert.equal(sb.mock.urlFetch.calls.length, 0, 'no rebuild started for an outsider');
+    assert.equal(sb.mock.writes - writes, 4, 'only the four guard WARN log rows');
     sb.mock.session.activeEmail = 'bbaki@aisa.sch.ae';
     sb.mock.session.effectiveEmail = 'bbaki@aisa.sch.ae';
     assert.equal(sb.gs.readTasks('Personal').length, 0);

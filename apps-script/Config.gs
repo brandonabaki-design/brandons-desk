@@ -19,6 +19,12 @@ const APP_TITLE = "Brandon's Desk";
  */
 const DESK_URL = 'https://claude.ai/artifact/3mG2UW54W6WkRFMAqkqxzr';
 
+/**
+ * The routine that builds the Desk ("Brandon's Desk morning build", docs/routines.md). Rebuild now in the web app
+ * starts it through the routine's API trigger, with the token saved as Script Property DESK_ROUTINE_TOKEN (docs/DESK.md 5).
+ */
+const DESK_ROUTINE_ID = 'trig_01VjWbjbnY1YSpjagSffkSNQ';
+
 /** Tab names, in creation order. */
 const TABS = {
   WORK: 'Work',

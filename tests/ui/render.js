@@ -956,8 +956,9 @@ async function deskChecks(page, url, vp, opts) {
   // ---- empty Desk tab: the calm panel, the Desk page link, and the add box still works ----
   await deskReload(page, url, '?desk=empty');
   const emptyText = await page.textContent('#desk-empty');
-  check(emptyText.indexOf('Your Desk appears here after the next morning build (6:45 on school days), or press Rebuild now on the Desk page.') >= 0 &&
-    (await page.getAttribute('#desk-empty #desk-open', 'href')) === DESK_URL, tag + ': empty state message and Desk page link');
+  check(emptyText.indexOf('Your Desk appears here after the next morning build (6:45 on school days), or press Rebuild now.') >= 0 &&
+    (await page.getAttribute('#desk-empty #desk-open', 'href')) === DESK_URL && (await page.textContent('#desk-empty #desk-rebuild')) === 'Rebuild now' &&
+    (await page.textContent('#desk-empty #desk-refresh')) === 'Refresh', tag + ': empty state message, Desk page link, Refresh and Rebuild now');
   check(await page.locator('#desk-board .dk-lane').count() === 1 && await page.locator('[data-key="a:W-fx16abcd"]').count() === 1, tag + ': empty state keeps one lane with the added tasks');
   await page.fill('#desk-add-title', 'Water the classroom plants');
   await page.press('#desk-add-title', 'Enter');

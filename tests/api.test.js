@@ -37,6 +37,8 @@ module.exports = async function (t) {
     sb.mock.seed('Inbox', [['I-1', new Date(), 'Gmail', 'A', 'S', 'snip', 'https://l', 'gmail:1', 'New', '', 'Work']]);
     sb.mock.seed('Config', [['CHAT_ENABLED', 'FALSE', '']]);
     seedDesk(sb, deskData());
+    sb.mock.properties.DESK_ROUTINE_TOKEN = 'sk-ant-oat01-fixture';
+    sb.mock.urlFetch.handler = () => ({ code: 200, body: { type: 'routine_fire', claude_code_session_url: 'https://claude.ai/code/session_x' } });
     sb.gs.log('x', 'INFO', 'y');
     const calls = {
       getBootstrap: {},
@@ -59,7 +61,9 @@ module.exports = async function (t) {
       runCaptureNow: {},
       getLog: { limit: 5 },
       getDesk: {},
-      setDeskItemDone: { itemId: 'plumber', done: true }
+      setDeskItemDone: { itemId: 'plumber', done: true },
+      getDeskStatus: {},
+      rebuildDesk: {}
     };
     const id = sb.gs.listTasks({ category: 'Work' }).tasks[0].id;
     calls.updateTask = { category: 'Work', id: id, patch: { note: 'n' } };

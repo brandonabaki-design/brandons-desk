@@ -257,3 +257,11 @@ function setDeskItemDone(input) {
     return setDeskItemDone_(inp);
   });
 }
+
+function getDeskStatus(input) {
+  return apiCall_('getDeskStatus', input, () => getDeskStatus_());
+}
+
+function rebuildDesk(input) {
+  return apiCall_('rebuildDesk', input, () => rebuildDesk_());
+}

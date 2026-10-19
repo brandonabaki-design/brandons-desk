@@ -4,7 +4,7 @@ Two scheduled Claude routines feed the tracker sheet:
 
 | Routine | When | Instructions |
 |---|---|---|
-| **Brandon's Desk morning build** (trigger `trig_01VjWbjbnY1YSpjagSffkSNQ`) | weekdays 06:45 Asia/Dubai, and the Desk's "Rebuild now" button | `docs/routine-desk-prompt.md` |
+| **Brandon's Desk morning build** (trigger `trig_01VjWbjbnY1YSpjagSffkSNQ`) | weekdays 06:45 Asia/Dubai, and "Rebuild now" on the routine's Desk page or in the web app (through the routine's API trigger, `docs/DESK.md` section 5) | `docs/routine-desk-prompt.md` |
 | **Weekly agenda review** | Mondays 14:45 Asia/Dubai, or started by hand | `docs/routine-agenda-prompt.md` |
 
 The morning build builds Brandon's daily action board, a claude.ai artifact (https://claude.ai/artifact/3mG2UW54W6WkRFMAqkqxzr), and since 13 Oct 2026 also syncs that board into the tracker sheet the web app uses. The weekly review reads the week's work and writes Andy's agenda for the next Tuesday 1:1 into the Agenda tab, the agenda Brandon downloads from the web app's Agenda page. Each prompt file is kept in step with its live routine; change both together.
@@ -14,9 +14,9 @@ The morning build builds Brandon's daily action board, a claude.ai artifact (htt
 | When | What | Writes |
 |---|---|---|
 | 06:15 weekdays | Apps Script `captureInbox` trigger (this repo) reads AISA Gmail and Google Chat on the server | Inbox tab |
-| 06:45 weekdays, or "Rebuild now" | Desk morning build (Claude routine): reads AISA mail and Chat in Brandon's Chrome when his computer is on, plus the Inbox tab, personal Gmail, the AISA calendar, the Desk's ticks and the tracker sheet | The Desk artifact; Work/Personal rows (new items with Source key `desk:<item id>`, Due/Link fill-ins, Done/Dropped when items leave the board); Inbox Status/Task ID; the Desk tab; on Monday builds and the meeting-day build before the meeting, a first agenda for Andy (Done, In progress, Questions tagged `claude-desk`) unless that week's agenda is already settled; one Log row |
+| 06:45 weekdays, or "Rebuild now" (routine page or web app) | Desk morning build (Claude routine): reads AISA mail and Chat in Brandon's Chrome when his computer is on, plus the Inbox tab, personal Gmail, the AISA calendar, the Desk's ticks and the tracker sheet | The Desk artifact; Work/Personal rows (new items with Source key `desk:<item id>`, Due/Link fill-ins, Done/Dropped when items leave the board); Inbox Status/Task ID; the Desk tab; on Monday builds and the meeting-day build before the meeting, a first agenda for Andy (Done, In progress, Questions tagged `claude-desk`) unless that week's agenda is already settled; one Log row |
 | Mondays 14:45, or by hand | Weekly agenda review (Claude routine): reads the Work, Agenda, Desk and Inbox tabs, AISA mail, Chat and docs in Brandon's Chrome, and the calendar | Andy's agenda for the next meeting in the Agenda tab (Done, In progress, Questions, Documents tagged `claude-review`); one Log row. Not the Desk tab, and no push notification |
-| Any time | The web app (this repo) | Work/Personal, Inbox, Agenda (Brandon's lines and edits) |
+| Any time | The web app (this repo) | Work/Personal, Inbox, Agenda (Brandon's lines and edits); its Rebuild now starts the morning build |
 
 Rules that keep the morning build and the web app in step:
 

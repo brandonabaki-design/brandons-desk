@@ -7,7 +7,7 @@ const GS_DIR = path.join(__dirname, '..', 'apps-script');
 
 const API_FUNCTIONS = ['getBootstrap', 'listTasks', 'addTask', 'updateTask', 'completeTask', 'reopenTask', 'dropTask',
   'moveTask', 'importText', 'importHtml', 'listInbox', 'promoteInbox', 'ignoreInbox', 'getAgenda', 'saveAgenda',
-  'regenerateAgenda', 'getNewsletter', 'runCaptureNow', 'getLog', 'getDesk', 'setDeskItemDone'];
+  'regenerateAgenda', 'getNewsletter', 'runCaptureNow', 'getLog', 'getDesk', 'setDeskItemDone', 'getDeskStatus', 'rebuildDesk'];
 
 const EXPECTED_FILES = ['Agenda.gs', 'Api.gs', 'Capture.gs', 'Chat.gs', 'Config.gs', 'Desk.gs', 'Import.gs', 'Newsletter.gs',
   'Setup.gs', 'Sheet.gs', 'Tasks.gs', 'Util.gs'];

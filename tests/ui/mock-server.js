@@ -3,7 +3,8 @@
  * fixtures that mirror SPEC.md section 5. Injected by tests/ui/render.js before the page scripts run,
  * or inlined by `node tests/ui/assemble.js --mock` for a manual look in a browser.
  *
- * Test hooks on window.__mock: state (fixtures), latency (ms), failNext(fn, message), calls (log), deskMode, agendaStamp(weekOf).
+ * Test hooks on window.__mock: state (fixtures), latency (ms), failNext(fn, message), calls (log), deskMode, agendaStamp(weekOf),
+ * rebuild ({ready, startedAt, builtAt} behind getDeskStatus / rebuildDesk) and landRebuild().
  * The agenda (getAgenda / saveAgenda / regenerateAgenda) follows docs/AGENDA.md section 2: rows carry `generated`, every answer a
  * `stamp` of the week, and saveAgenda refuses a stale stamp; editing window.__mock.state.agendaStore stands in for a Claude routine.
  * The Desk (getDesk / setDeskItemDone, docs/DESK.md) is a fictional board; ?desk=empty|invalid|stale|minimal in the
@@ -310,9 +311,23 @@
       return it;
     });
     var builtDate = mode === 'stale' ? d(-1) : TODAY;
+    var builtAt = mode === 'stale' ? builtDate + ' 09:12' : mock.rebuild.builtAt;
     return { ok: true, desk: { built: src.built, eyebrow: src.eyebrow, sources: src.sources, lanes: src.lanes, strip: src.strip, items: items, cleared: src.cleared,
       priorities: src.priorities, coming: src.coming, agenda: src.agenda, llt: src.llt, quick: src.quick },
-      added: deskAdded(linked), builtAt: builtDate + ' 09:12', builtDate: builtDate, stale: builtDate !== TODAY, deskUrl: DESK_URL };
+      added: deskAdded(linked), builtAt: builtAt, builtDate: builtDate, stale: builtDate !== TODAY, deskUrl: DESK_URL, rebuildNow: rebuildNow() };
+  }
+  // Rebuild now (docs/DESK.md 5): window.__mock.rebuild holds {ready, startedAt, builtAt}; a rebuild runs while builtAt <= startedAt.
+  // window.__mock.landRebuild() writes the new build (Built one minute after the start).
+  function rebuildNow() {
+    var r = mock.rebuild, running = !!r.startedAt && !(r.builtAt > r.startedAt);
+    return { ready: r.ready, running: running, startedAt: running ? r.startedAt : '', sessionUrl: running ? 'https://claude.ai/code/session_01MOCK' : '' };
+  }
+  function rebuildDeskImpl() {
+    if (!mock.rebuild.ready) throw new Error('Rebuild now is not set up yet: give the Desk routine an API trigger and save its token as the Script Property DESK_ROUTINE_TOKEN (README, setup step 10).');
+    var now = rebuildNow();
+    if (now.running) throw new Error('The rebuild started at ' + now.startedAt.slice(11) + ' is still running. The Desk updates here when it lands.');
+    mock.rebuild.startedAt = TODAY + ' 09:30';
+    return { started: true, sessionUrl: 'https://claude.ai/code/session_01MOCK', rebuildNow: rebuildNow() };
   }
   function setDeskItemDoneImpl(p) {
     var it = null;
@@ -454,12 +469,16 @@
     },
     getLog: function (p) { return { rows: clone(log.slice(0, p.limit || 100)) }; },
     getDesk: getDeskImpl,
-    setDeskItemDone: setDeskItemDoneImpl
+    setDeskItemDone: setDeskItemDoneImpl,
+    getDeskStatus: function () { return { builtAt: mock.deskMode === 'empty' ? '' : mock.rebuild.builtAt, rebuildNow: rebuildNow() }; },
+    rebuildDesk: rebuildDeskImpl
   };
 
   var deskParam = /[?&]desk=(empty|invalid|stale|minimal)\b/.exec(location.search);
   var mock = { state: { tasks: tasks, inbox: inbox, agendaStore: agendaStore, config: config, today: TODAY, desk: desk }, latency: 40, chatMode: 'api', calls: [], failures: {},
     deskMode: deskParam ? deskParam[1] : 'ok',
+    rebuild: { ready: true, startedAt: '', builtAt: TODAY + ' 09:12' },
+    landRebuild: function () { mock.rebuild.builtAt = TODAY + ' 09:31'; },
     failNext: function (name, message) { mock.failures[name] = message || 'Mock failure'; }, agendaStamp: agendaStamp };
   window.__mock = mock;
 
